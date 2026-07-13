@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>档期与收入 · 自由职业者工作台</title>
+  <link rel="icon" href="favicon.ico" sizes="any">
+  <link rel="icon" href="favicon.png" type="image/png" sizes="32x32">
+  <link rel="icon" href="assets/favicon-32.png" type="image/png" sizes="32x32">
+  <link rel="icon" href="assets/favicon-16.png" type="image/png" sizes="16x16">
+  <link rel="apple-touch-icon" href="assets/apple-touch-icon.png" sizes="180x180">
+  <link rel="shortcut icon" href="favicon.ico">
+
+  <link href="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.css" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@fullcalendar/core@6.1.15/locales/zh-cn.global.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="header">
+    <div class="header__brand">
+      <img class="header__logo" src="assets/logo.png" alt="WORKSPACE">
+      <div>
+        <h1 class="header__title">WORKSPACE</h1>
+        <p class="header__subtitle">档期管理 · 收入追踪</p>
+      </div>
+    </div>
+    <div class="header__user">
+      <button type="button" class="header__user-avatar" id="btnAvatar" aria-label="更换头像">
+        <img id="userAvatarImg" class="header__user-avatar-img" alt="" hidden>
+        <span id="userAvatarInitial" class="header__user-avatar-initial">创</span>
+      </button>
+      <span
+        class="header__user-name"
+        id="userName"
+        contenteditable="true"
+        spellcheck="false"
+        role="textbox"
+        aria-label="用户名"
+      >创作者</span>
+      <input type="file" id="avatarInput" accept="image/*" hidden>
+    </div>
+  </header>
+
+  <section class="stats">
+    <div class="stat-card">
+      <span class="stat-card__label">本月收入</span>
+      <span class="stat-card__value" id="statMonthIncome">¥0</span>
+    </div>
+    <div class="stat-card">
+      <span class="stat-card__label">本月档期</span>
+      <span class="stat-card__value" id="statMonthEvents">0</span>
+    </div>
+    <div class="stat-card">
+      <span class="stat-card__label">已完成</span>
+      <span class="stat-card__value stat-card__value--success" id="statCompleted">0</span>
+    </div>
+    <div class="stat-card">
+      <span class="stat-card__label">待交付</span>
+      <span class="stat-card__value stat-card__value--warning" id="statPending">0</span>
+    </div>
+  </section>
+
+  <main class="dashboard">
+    <section class="panel panel--calendar">
+      <div class="quick-add" id="quickAddPanel">
+        <label class="quick-add__label" for="quickAddInput">快速添加档期</label>
+        <div class="quick-add__row">
+          <input type="text" id="quickAddInput" placeholder="客户：ID+日期/自媒体：项目+日期+状态">
+          <button type="button" class="btn btn--primary" id="btnQuickAdd">添加到日历</button>
+        </div>
+        <p class="quick-add__hint" id="quickAddDateHint">将添加到：今天</p>
+      </div>
+
+      <section class="income-delivery" id="incomeDeliveryPanel" hidden>
+        <label class="income-delivery__label" for="deliveryConfirmInput">交付确认</label>
+        <div class="income-delivery__row">
+          <input
+            type="text"
+            id="deliveryConfirmInput"
+            class="income-delivery__input"
+            placeholder="客户ID+时长（日期可选）"
+            autocomplete="off"
+          >
+          <button type="button" class="btn btn--primary" id="btnDeliveryConfirm">确认</button>
+        </div>
+        <p class="income-delivery__hint" id="deliveryConfirmFeedback">仅匹配审核中的客户档期</p>
+      </section>
+
+      <div class="calendar-container">
+        <div class="view-toggle" id="viewToggle">
+          <button type="button" class="view-toggle__btn view-toggle__btn--active" id="viewToggleMonth" data-view="month">档期</button>
+          <button type="button" class="view-toggle__btn" id="viewToggleIncome" data-view="income">收入</button>
+        </div>
+        <div id="calendarWrap">
+          <div id="calendar"></div>
+        </div>
+        <div id="incomeView" class="income-view" hidden>
+          <div class="income-view__inner">
+            <div class="income-view__toolbar">
+              <div class="income-view__nav">
+                <button type="button" class="btn btn--ghost income-view__nav-btn" id="btnIncomePrevMonth" aria-label="上个月">‹</button>
+                <button type="button" class="btn btn--ghost income-view__nav-btn" id="btnIncomeNextMonth" aria-label="下个月">›</button>
+              </div>
+              <span class="income-view__month" id="incomeMonthLabel">—</span>
+              <div class="income-view__tabs view-toggle" id="incomeViewToggle">
+                <button type="button" class="view-toggle__btn" id="incomeViewToggleMonth" data-view="month">档期</button>
+                <button type="button" class="view-toggle__btn view-toggle__btn--active" id="incomeViewToggleIncome" data-view="income">收入</button>
+              </div>
+            </div>
+
+            <div class="income-table-wrap">
+              <table class="income-table">
+                <thead>
+                  <tr>
+                    <th class="income-table__col-status" scope="col"><span class="sr-only">到账状态</span></th>
+                    <th scope="col">日期</th>
+                    <th scope="col">名称</th>
+                    <th scope="col">类型</th>
+                    <th class="income-table__col-amount" scope="col">金额</th>
+                    <th class="income-table__col-actions" scope="col"><span class="sr-only">操作</span></th>
+                  </tr>
+                </thead>
+                <tbody id="incomeTableBody"></tbody>
+              </table>
+              <p class="income-table__empty" id="incomeTableEmpty" hidden>本月暂无收入记录</p>
+            </div>
+
+            <footer class="income-view__footer" id="incomePanelFooter">
+              <button type="button" class="btn btn--ghost income-toolbar__btn" id="btnManualIncome">手动补录</button>
+              <button type="button" class="btn btn--ghost income-toolbar__btn" id="btnClientManage">客户管理</button>
+            </footer>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <aside class="sidebar">
+      <section class="panel panel--chart">
+        <div class="panel__header">
+          <h2 class="panel__title">收入分布</h2>
+          <p class="panel__hint" id="chartPeriodLabel">当前月份</p>
+        </div>
+        <div class="chart-wrap">
+          <canvas id="incomeChart"></canvas>
+        </div>
+        <div class="chart-legend" id="chartLegend"></div>
+      </section>
+
+      <section class="panel panel--list">
+        <div class="panel__header">
+          <h2 class="panel__title">近期档期</h2>
+        </div>
+        <ul class="event-list" id="upcomingList">
+          <li class="event-list__empty">暂无档期</li>
+        </ul>
+      </section>
+    </aside>
+  </main>
+
+  <footer class="page-footer">
+    <p class="page-footer__text">© 2026 cantar · 晃晃 v1.0 · All rights reserved.</p>
+  </footer>
+
+  <dialog class="modal" id="eventModal">
+    <form class="modal__form" id="eventForm">
+      <div class="modal__header">
+        <h2 class="modal__title" id="modalTitle">新建档期</h2>
+        <button type="button" class="modal__close" id="btnCloseModal" aria-label="关闭">&times;</button>
+      </div>
+
+      <input type="hidden" id="eventId">
+
+      <div class="event-form__fields">
+        <div class="form-group event-form__full">
+          <label for="eventProjectName">项目名称</label>
+          <input type="text" id="eventProjectName" placeholder="自媒体项目">
+        </div>
+
+        <div class="form-group event-form__full" id="eventClientGroup">
+          <label for="eventClient">客户</label>
+          <input type="text" id="eventClient" placeholder="客户ID">
+        </div>
+
+        <div class="form-group event-form__half event-form__half--left">
+          <label for="eventType">类型</label>
+          <select id="eventType" required></select>
+        </div>
+        <div class="form-group event-form__half event-form__half--right">
+          <label for="eventStatus">状态</label>
+          <select id="eventStatus" required>
+            <option value="已排期">已排期</option>
+            <option value="剪辑中">剪辑中</option>
+            <option value="审核中">审核中</option>
+            <option value="已交付">已交付</option>
+          </select>
+        </div>
+
+        <div class="form-group event-form__full">
+          <label for="eventDate">日期</label>
+          <input type="date" id="eventDate" required>
+        </div>
+
+        <div class="form-group event-form__full" id="eventSocialAmountGroup" hidden>
+          <label for="eventSocialAmount">一口价金额（元）</label>
+          <input type="number" id="eventSocialAmount" min="0" step="0.01" placeholder="例：1500">
+          <p class="event-form__hint" id="eventSocialAmountHint" hidden></p>
+        </div>
+
+        <div class="form-group event-form__full" id="eventIncomeGroup" hidden>
+          <label for="eventIncome">收入（元）</label>
+          <input type="number" id="eventIncome" min="0" step="0.01" placeholder="0">
+        </div>
+
+        <div class="form-group event-form__full">
+          <label for="eventNotes">备注</label>
+          <textarea id="eventNotes" rows="3" placeholder=""></textarea>
+        </div>
+      </div>
+
+      <div class="modal__actions">
+        <button type="button" class="btn btn--danger" id="btnDeleteEvent" hidden>删除</button>
+        <div class="modal__actions-right">
+          <button type="button" class="btn btn--ghost" id="btnCancelModal">取消</button>
+          <button type="submit" class="btn btn--primary">保存</button>
+        </div>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="modal" id="deliveryPickModal">
+    <div class="modal__form">
+      <div class="modal__header">
+        <h2 class="modal__title">选择档期</h2>
+        <button type="button" class="modal__close" id="btnCloseDeliveryPick" aria-label="关闭">&times;</button>
+      </div>
+      <p class="delivery-pick__hint">匹配到多条可关联档期，请选择要确认的条目：</p>
+      <div class="delivery-pick__list" id="deliveryPickList"></div>
+      <div class="modal__actions">
+        <div class="modal__actions-right">
+          <button type="button" class="btn btn--ghost" id="btnCancelDeliveryPick">取消</button>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog class="modal" id="clientModal">
+    <div class="modal__form">
+      <div class="modal__header">
+        <h2 class="modal__title">客户管理</h2>
+        <button type="button" class="modal__close" id="btnCloseClientModal" aria-label="关闭">&times;</button>
+      </div>
+
+      <div class="client-list-wrap">
+        <table class="client-table">
+          <colgroup>
+            <col class="client-table__col-id">
+            <col class="client-table__col-rate">
+            <col class="client-table__col-actions">
+          </colgroup>
+          <thead>
+            <tr>
+              <th scope="col">客户ID</th>
+              <th scope="col">单价（元/分钟）</th>
+              <th class="client-table__col-actions" scope="col"><span class="sr-only">操作</span></th>
+            </tr>
+          </thead>
+          <tbody id="clientTableBody"></tbody>
+          <tfoot>
+            <tr class="client-table__add-row">
+              <td>
+                <input type="text" class="client-table__input" id="clientAddName" placeholder="例：XX" autocomplete="off">
+              </td>
+              <td>
+                <input type="number" class="client-table__input" id="clientAddRate" min="0" step="0.01" placeholder="请输入单价" autocomplete="off">
+              </td>
+              <td class="client-table__col-actions">
+                <button type="button" class="client-table__icon-btn" id="btnClientAddConfirm" aria-label="确认">✓</button>
+                <button type="button" class="client-table__icon-btn" id="btnClientAddCancel" aria-label="取消">✕</button>
+              </td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog class="modal modal--archive" id="incomeArchiveModal">
+    <div class="modal__form income-archive">
+      <div class="modal__header">
+        <h2 class="modal__title">📊 收入档案</h2>
+        <button type="button" class="modal__close" id="btnCloseIncomeArchive" aria-label="关闭">&times;</button>
+      </div>
+
+      <div class="income-archive__body">
+        <section class="income-archive__section">
+          <h3 class="income-archive__section-title" id="incomeArchiveYearTitle">—</h3>
+          <div class="income-archive__month-grid" id="incomeArchiveMonthGrid"></div>
+          <div class="income-archive__summary" id="incomeArchiveYearSummary"></div>
+        </section>
+
+        <div class="income-archive__year-nav">
+          <button type="button" class="btn btn--ghost income-archive__year-btn" id="btnArchivePrevYear" aria-label="上一年">◀</button>
+          <span class="income-archive__year-label" id="incomeArchiveYearLabel">—</span>
+          <button type="button" class="btn btn--ghost income-archive__year-btn" id="btnArchiveNextYear" aria-label="下一年">▶</button>
+        </div>
+
+        <section class="income-archive__section">
+          <h3 class="income-archive__section-title">年份收入趋势</h3>
+          <div class="income-archive__chart-wrap">
+            <canvas id="incomeArchiveTrendChart"></canvas>
+          </div>
+        </section>
+      </div>
+
+      <p class="income-archive__footnote">统计口径：已到账收入（客户：仅 paid，自媒体：创建即计入）</p>
+    </div>
+  </dialog>
+
+  <dialog class="modal" id="manualIncomeModal">
+    <form class="modal__form" id="manualIncomeForm">
+      <div class="modal__header">
+        <h2 class="modal__title" id="manualIncomeModalTitle">手动补录</h2>
+        <button type="button" class="modal__close" id="btnCloseManualIncomeModal" aria-label="关闭">&times;</button>
+      </div>
+
+      <input type="hidden" id="manualIncomeId">
+      <input type="hidden" id="manualIncomeSource">
+
+      <div class="form-group" id="manualIncomeDateGroup">
+        <label for="manualIncomeDate">日期</label>
+        <input type="date" id="manualIncomeDate" required>
+      </div>
+
+      <div class="form-group" id="manualIncomeTypeGroup">
+        <label for="manualIncomeType">类型</label>
+        <select id="manualIncomeType" required>
+          <option value="client">客户剪辑</option>
+          <option value="social">自媒体一口价</option>
+        </select>
+      </div>
+
+      <div id="manualIncomeClientFields">
+        <div class="form-group">
+          <label for="manualIncomeClientName">客户名</label>
+          <input type="text" id="manualIncomeClientName" placeholder="例：丁文">
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="manualIncomeDuration">时长（秒）</label>
+            <input type="number" id="manualIncomeDuration" min="1" step="1" placeholder="例：210">
+          </div>
+          <div class="form-group">
+            <label for="manualIncomeRate">单价（元/分钟）</label>
+            <input type="number" id="manualIncomeRate" min="0" step="0.01" placeholder="例：200">
+          </div>
+        </div>
+      </div>
+
+      <div id="manualIncomeSocialFields" hidden>
+        <div class="form-group">
+          <label for="manualIncomeProject">项目名</label>
+          <input type="text" id="manualIncomeProject" placeholder="例：B站商单">
+        </div>
+        <div class="form-group">
+          <label for="manualIncomeAmount">金额（元）</label>
+          <input type="number" id="manualIncomeAmount" min="0" step="0.01" placeholder="例：1500">
+        </div>
+      </div>
+
+      <div class="form-group" id="manualIncomePriceGroup" hidden>
+        <label for="manualIncomeFinalPrice">金额（元）</label>
+        <input type="number" id="manualIncomeFinalPrice" min="0" step="0.01">
+      </div>
+
+      <div class="form-group" id="manualIncomeStatusGroup">
+        <label for="manualIncomeStatus">到账状态</label>
+        <select id="manualIncomeStatus">
+          <option value="pending">待收款</option>
+          <option value="paid">已到账</option>
+        </select>
+      </div>
+
+      <p class="manual-income__hint" id="manualIncomeAutoHint" hidden>自动生成的收入仅可修改金额与到账状态。</p>
+
+      <div class="modal__actions">
+        <button type="button" class="btn btn--danger" id="btnDeleteManualIncome" hidden>删除</button>
+        <div class="modal__actions-right">
+          <button type="button" class="btn btn--ghost" id="btnCancelManualIncome">取消</button>
+          <button type="submit" class="btn btn--primary">保存</button>
+        </div>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="modal" id="incomeEditModal">
+    <form class="modal__form" id="incomeEditForm">
+      <div class="modal__header">
+        <h2 class="modal__title">编辑收入</h2>
+        <button type="button" class="modal__close" id="btnCloseIncomeEdit" aria-label="关闭">&times;</button>
+      </div>
+
+      <input type="hidden" id="incomeEditId">
+      <p class="income-edit__meta" id="incomeEditTypeHint"></p>
+
+      <div class="form-group" id="incomeEditScheduleGroup" hidden>
+        <label for="incomeEditScheduleId">关联档期 ID（只读）</label>
+        <input type="text" id="incomeEditScheduleId" class="input-readonly" readonly tabindex="-1">
+      </div>
+
+      <div class="form-group">
+        <label for="incomeEditDate">日期</label>
+        <input type="date" id="incomeEditDate" required>
+      </div>
+
+      <div class="form-group">
+        <label for="incomeEditName" id="incomeEditNameLabel">名称</label>
+        <input type="text" id="incomeEditName" required>
+      </div>
+
+      <div class="form-group">
+        <label for="incomeEditFinalPrice">总价（元）</label>
+        <input type="number" id="incomeEditFinalPrice" min="0" step="0.01" required>
+      </div>
+
+      <div class="form-group" id="incomeEditDurationGroup">
+        <label for="incomeEditDuration">时长（秒）</label>
+        <input type="number" id="incomeEditDuration" min="0" step="1" placeholder="无则留空">
+      </div>
+
+      <div class="form-group" id="incomeEditStatusGroup">
+        <label for="incomeEditStatus">到账状态</label>
+        <select id="incomeEditStatus">
+          <option value="pending">待收款</option>
+          <option value="paid">已到账</option>
+        </select>
+      </div>
+
+      <div class="modal__actions">
+        <div class="modal__actions-right">
+          <button type="button" class="btn btn--ghost" id="btnCancelIncomeEdit">取消</button>
+          <button type="submit" class="btn btn--primary">保存</button>
+        </div>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="app.js"></script>
+</body>
+</html>
