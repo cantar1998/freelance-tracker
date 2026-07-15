@@ -1,6 +1,12 @@
 const STORAGE_KEY = 'freelanceTrackerData';
 
-const EVENT_TYPES = ['客户', '自媒体'];
+const EVENT_TYPES = ['客户', '自媒体']; // 预置类型 value；自建类型用自定义 id
+const MAX_EVENT_TYPES = 10; // 含 2 个预置
+const MAX_CUSTOM_EVENT_TYPES = MAX_EVENT_TYPES - EVENT_TYPES.length;
+
+const CUSTOM_TYPE_COLORS = [
+  '#0f766e', '#b45309', '#1d4ed8', '#7c3aed', '#be123c', '#15803d', '#c2410c', '#0369a1',
+];
 
 function hslToHex(h, s, l) {
   s /= 100;
@@ -35,15 +41,35 @@ function hslToHex(h, s, l) {
   return `#${toHex(r1)}${toHex(g1)}${toHex(b1)}`;
 }
 
-const CLIENT_EVENT_BG = '#1A1A1A';
-const CLIENT_EVENT_TEXT = '#FFFFFF';
 const MEDIA_ACCENT = '#d51b4f';
 
-const STATUS_COLORS = {
-  脚本: '#F5E0E8',
-  拍摄: '#E8A8BC',
-  剪辑: '#C44D6F',
-  发布: MEDIA_ACCENT,
+const CLIENT_BILLING = { TIME: 'time', FLAT: 'flat' };
+
+const TIME_BILLING_SCHEMES = {
+  REMAINDER_LADDER: 'remainder_ladder', // 默认：不到 30 秒半分钟，超过 1 分钟
+  REMAINDER_TIERS: 'remainder_tiers', // 自定义：满 A 秒→0.5，满 B 秒→1
+};
+
+const DEFAULT_SETTINGS = {
+  accent: MEDIA_ACCENT,
+  /** 全局：关闭=客户按金额；打开=客户按时长（默认关闭） */
+  timeBillingEnabled: false,
+  timeBilling: {
+    scheme: TIME_BILLING_SCHEMES.REMAINDER_LADDER,
+    thresholdSeconds: 30,
+    lowMinutes: 0.5,
+    highMinutes: 1,
+    // 自定义：满 tier1 秒 → 0.5 分；满 tier2 秒 → 1 分（≥）
+    tier1OverSeconds: 10,
+    tier1Minutes: 0.5,
+    tier2OverSeconds: 30,
+    tier2Minutes: 1,
+  },
+  eventTypes: {
+    client: { label: '客户剪辑', color: '#000000' },
+    social: { label: '自媒体', color: MEDIA_ACCENT },
+  },
+  customEventTypes: [],
 };
 
 const STATUS_EMOJIS = {
@@ -51,11 +77,14 @@ const STATUS_EMOJIS = {
   剪辑中: '✂️',
   审核中: '👀',
   已交付: '✅',
+  未完成: '🕒',
+  已完成: '✅',
 };
 
 const CLIENT_STATUSES = ['已排期', '剪辑中', '审核中', '已交付'];
 const DELIVERY_MATCHABLE_CLIENT_STATUSES = ['审核中'];
 const MEDIA_STATUSES = ['脚本', '拍摄', '剪辑', '发布'];
+const CUSTOM_STATUSES = ['未完成', '已完成'];
 const EVENT_STATUSES = CLIENT_STATUSES;
 
 const CATEGORY_TO_TYPE = {
@@ -75,6 +104,7 @@ const OLD_STATUS_TO_NEW = {
 const INCOME_TYPES = {
   CLIENT: 'client',
   SOCIAL: 'social',
+  CUSTOM: 'custom',
 };
 
 const INCOME_STATUS = {
@@ -86,9 +116,6 @@ const INCOME_SOURCE = {
   AUTO: 'auto',
   MANUAL: 'manual',
 };
-
-const BILLING_SECONDS_PER_UNIT = 30;
-const BILLING_MINUTES_PER_UNIT = 0.5;
 
 const DEFAULT_DATA = {
   events: [],
@@ -105,7 +132,268 @@ const DEFAULT_DATA = {
     name: '创作者',
     avatar: '',
   },
+  settings: structuredClone(DEFAULT_SETTINGS),
 };
+
+function normalizeHexColor(value, fallback) {
+  const s = String(value || '').trim();
+  if (/^#[0-9A-Fa-f]{6}$/.test(s)) return `#${s.slice(1).toLowerCase()}`;
+  if (/^#[0-9A-Fa-f]{3}$/.test(s)) {
+    return `#${s[1]}${s[1]}${s[2]}${s[2]}${s[3]}${s[3]}`.toLowerCase();
+  }
+  return fallback;
+}
+
+function clampBillingSeconds(value, fallback, min = 0, max = 59) {
+  let n = Number(value);
+  if (!Number.isFinite(n)) n = fallback;
+  n = Math.floor(n);
+  if (n < min) n = min;
+  if (n > max) n = max;
+  return n;
+}
+
+function clampPositiveMinutes(value, fallback) {
+  let n = Number(value);
+  if (!Number.isFinite(n) || n < 0) n = fallback;
+  return n;
+}
+
+function normalizeTimeBilling(raw) {
+  const d = DEFAULT_SETTINGS.timeBilling;
+  let scheme = raw?.scheme;
+
+  // 旧版无 scheme / 匀速块 → 默认推荐规则
+  if (!scheme || scheme === 'block') {
+    scheme = d.scheme;
+  }
+  if (
+    scheme !== TIME_BILLING_SCHEMES.REMAINDER_LADDER
+    && scheme !== TIME_BILLING_SCHEMES.REMAINDER_TIERS
+  ) {
+    scheme = d.scheme;
+  }
+
+  return {
+    scheme,
+    thresholdSeconds: d.thresholdSeconds,
+    lowMinutes: d.lowMinutes,
+    highMinutes: d.highMinutes,
+    tier1OverSeconds: clampBillingSeconds(raw?.tier1OverSeconds, d.tier1OverSeconds, 1, 58),
+    tier1Minutes: d.tier1Minutes,
+    tier2OverSeconds: clampBillingSeconds(raw?.tier2OverSeconds, d.tier2OverSeconds, 2, 59),
+    tier2Minutes: d.tier2Minutes,
+  };
+}
+
+function normalizeCustomEventType(raw, index = 0) {
+  const id = String(raw?.id || '').trim() || crypto.randomUUID();
+  const label = String(raw?.label || '').trim() || `类型${index + 1}`;
+  const color = normalizeHexColor(
+    raw?.color,
+    CUSTOM_TYPE_COLORS[index % CUSTOM_TYPE_COLORS.length],
+  );
+  return { id, label, color };
+}
+
+function normalizeCustomEventTypes(list) {
+  if (!Array.isArray(list)) return [];
+  const seen = new Set();
+  const out = [];
+  for (let i = 0; i < list.length; i += 1) {
+    if (out.length >= MAX_CUSTOM_EVENT_TYPES) break;
+    const item = normalizeCustomEventType(list[i], i);
+    if (seen.has(item.id)) continue;
+    seen.add(item.id);
+    out.push(item);
+  }
+  return out;
+}
+
+function normalizeSettings(raw) {
+  const d = DEFAULT_SETTINGS;
+  return {
+    accent: normalizeHexColor(raw?.accent, d.accent),
+    timeBillingEnabled: Boolean(raw?.timeBillingEnabled),
+    timeBilling: normalizeTimeBilling(raw?.timeBilling),
+    eventTypes: {
+      // 预置：名称锁死，只允许改颜色
+      client: {
+        label: d.eventTypes.client.label,
+        color: normalizeHexColor(
+          raw?.eventTypes?.client?.color,
+          d.eventTypes.client.color,
+        ),
+      },
+      social: {
+        label: d.eventTypes.social.label,
+        color: normalizeHexColor(
+          raw?.eventTypes?.social?.color,
+          d.eventTypes.social.color,
+        ),
+      },
+    },
+    customEventTypes: normalizeCustomEventTypes(raw?.customEventTypes),
+  };
+}
+
+function getCustomEventTypes() {
+  return getSettings().customEventTypes || [];
+}
+
+function findCustomTypeById(id) {
+  if (!id) return null;
+  return getCustomEventTypes().find((t) => t.id === id) || null;
+}
+
+function isCustomEventType(type) {
+  return Boolean(findCustomTypeById(type));
+}
+
+function isValidEventType(type) {
+  return type === '客户' || type === '自媒体' || isCustomEventType(type);
+}
+
+function getEventTypeOptions() {
+  return [
+    { value: '客户', label: getTypeLabel('client') },
+    { value: '自媒体', label: getTypeLabel('social') },
+    ...getCustomEventTypes().map((t) => ({ value: t.id, label: t.label })),
+  ];
+}
+
+function getStatusesForEventType(type) {
+  if (type === '客户') return CLIENT_STATUSES;
+  if (type === '自媒体') return MEDIA_STATUSES;
+  if (isCustomEventType(type)) return CUSTOM_STATUSES;
+  return MEDIA_STATUSES;
+}
+
+function getDefaultStatusForEventType(type) {
+  if (type === '客户') return '已排期';
+  if (type === '自媒体') return '剪辑';
+  if (isCustomEventType(type)) return '未完成';
+  return '剪辑';
+}
+
+function getCustomTypeColor(typeId) {
+  return findCustomTypeById(typeId)?.color || CUSTOM_TYPE_COLORS[0];
+}
+
+function getCustomTypeLabel(typeId) {
+  return findCustomTypeById(typeId)?.label || '自定义';
+}
+
+function countEventTypesTotal() {
+  return 2 + getCustomEventTypes().length;
+}
+
+function getTimeBillingRule() {
+  return getSettings().timeBilling;
+}
+
+function isTimeBillingEnabled() {
+  return Boolean(getSettings().timeBillingEnabled);
+}
+
+/** 客户：全局开关决定按时/按金额；自媒体固定按金额 */
+function getScheduleBillingMode(schedule) {
+  if (!schedule) {
+    return isTimeBillingEnabled() ? CLIENT_BILLING.TIME : CLIENT_BILLING.FLAT;
+  }
+  const incomeType = schedule.incomeType || eventTypeToIncomeType(schedule.type);
+  if (incomeType === INCOME_TYPES.SOCIAL || schedule.type === '自媒体') {
+    return CLIENT_BILLING.FLAT;
+  }
+  return isTimeBillingEnabled() ? CLIENT_BILLING.TIME : CLIENT_BILLING.FLAT;
+}
+
+/** loadData 过程中临时挂载，供 normalizeEvent 识别自定义类型 */
+let settingsCacheDuringLoad = null;
+
+function getSettings() {
+  if (settingsCacheDuringLoad) return settingsCacheDuringLoad;
+  appData.settings = normalizeSettings(appData.settings);
+  return appData.settings;
+}
+
+function getTypeColor(key) {
+  const types = getSettings().eventTypes;
+  return types[key]?.color || DEFAULT_SETTINGS.eventTypes[key]?.color || MEDIA_ACCENT;
+}
+
+function getTypeLabel(key) {
+  const types = getSettings().eventTypes;
+  return types[key]?.label || DEFAULT_SETTINGS.eventTypes[key]?.label || key;
+}
+
+function hexToRgb(hex) {
+  const h = normalizeHexColor(hex, '#000000').slice(1);
+  return {
+    r: parseInt(h.slice(0, 2), 16),
+    g: parseInt(h.slice(2, 4), 16),
+    b: parseInt(h.slice(4, 6), 16),
+  };
+}
+
+function darkenHex(hex, amount = 0.15) {
+  const { r, g, b } = hexToRgb(hex);
+  const d = (v) => Math.max(0, Math.round(v * (1 - amount)));
+  return `#${[d(r), d(g), d(b)].map((v) => v.toString(16).padStart(2, '0')).join('')}`;
+}
+
+/** t=0 偏向 hexA，t=1 偏向 hexB */
+function mixHex(hexA, hexB, t) {
+  const a = hexToRgb(hexA);
+  const b = hexToRgb(hexB);
+  const w = Math.min(1, Math.max(0, Number(t) || 0));
+  const m = (x, y) => Math.round(x + (y - x) * w);
+  return `#${[m(a.r, b.r), m(a.g, b.g), m(a.b, b.b)]
+    .map((v) => v.toString(16).padStart(2, '0'))
+    .join('')}`;
+}
+
+function colorLuminance(hex) {
+  const { r, g, b } = hexToRgb(hex);
+  return (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+}
+
+function contrastTextColor(bgHex) {
+  return colorLuminance(bgHex) > 0.72 ? '#111111' : '#FFFFFF';
+}
+
+/** 自媒体状态色：由类型色派生深浅（脚本最浅 → 发布为原色） */
+function getSocialStatusColor(status) {
+  const base = getTypeColor('social');
+  switch (status) {
+    case '脚本':
+      return mixHex(base, '#ffffff', 0.82);
+    case '拍摄':
+      return mixHex(base, '#ffffff', 0.55);
+    case '剪辑':
+      return mixHex(base, '#ffffff', 0.28);
+    case '发布':
+      return base;
+    default:
+      return mixHex(base, '#ffffff', 0.28);
+  }
+}
+
+function accentToSoft(hex, alpha = 0.12) {
+  const { r, g, b } = hexToRgb(hex);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+function applyThemeFromSettings() {
+  const { accent } = getSettings();
+  const root = document.documentElement;
+  const hover = darkenHex(accent);
+  root.style.setProperty('--accent', accent);
+  root.style.setProperty('--accent-hover', hover);
+  root.style.setProperty('--primary', accent);
+  root.style.setProperty('--primary-hover', hover);
+  root.style.setProperty('--accent-soft', accentToSoft(accent));
+}
 
 let appData = loadData();
 let calendar = null;
@@ -125,13 +413,32 @@ function getMainViewMonthKey(date = currentViewDate) {
   return `${date.getFullYear()}-${date.getMonth()}`;
 }
 
+const QUICK_ADD_PANEL_HEIGHT = 140;
+
+function getQuickAddReserveHeight() {
+  const el = $('#quickAddPanel');
+  if (!el) return QUICK_ADD_PANEL_HEIGHT;
+  if (!el.hidden && el.offsetHeight > 0) return el.offsetHeight;
+  return QUICK_ADD_PANEL_HEIGHT;
+}
+
 function applyMainViewHeight(px) {
   const calendarWrap = $('#calendarWrap');
   const incomeView = $('#incomeView');
   if (!px || px <= 0) return;
-  const heightPx = `${Math.ceil(px)}px`;
-  if (calendarWrap) calendarWrap.style.height = heightPx;
-  if (incomeView) incomeView.style.height = heightPx;
+  const base = Math.ceil(px);
+  if (calendarWrap) calendarWrap.style.height = `${base}px`;
+  if (incomeView) {
+    // 收入页隐藏「快速添加」时补足同高，避免左侧变矮连带侧栏图表缩小
+    const incomeH = base + getQuickAddReserveHeight();
+    incomeView.style.height = `${incomeH}px`;
+  }
+}
+
+function resizeSidebarCharts() {
+  incomeChart?.resize?.();
+  workDaysMonthChart?.resize?.();
+  workDaysYearChart?.resize?.();
 }
 
 /** 测量前先放开固定高度，避免读到被裁剪后的 offsetHeight */
@@ -213,10 +520,12 @@ function syncMainViewHeightNow() {
   if (height > 0) {
     applyMainViewHeight(height);
     mainViewHeightByMonth.set(getMainViewMonthKey(), height);
+    requestAnimationFrame(resizeSidebarCharts);
   }
 }
 
 const $ = (sel) => document.querySelector(sel);
+const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
 function normalizeProfile(profile) {
   const fallback = DEFAULT_DATA.profile;
@@ -227,7 +536,10 @@ function normalizeProfile(profile) {
 }
 
 function eventTypeToIncomeType(type) {
-  return type === '客户' ? INCOME_TYPES.CLIENT : INCOME_TYPES.SOCIAL;
+  if (type === '客户') return INCOME_TYPES.CLIENT;
+  if (type === '自媒体') return INCOME_TYPES.SOCIAL;
+  if (isCustomEventType(type)) return INCOME_TYPES.CUSTOM;
+  return INCOME_TYPES.SOCIAL;
 }
 
 function normalizeClient(client) {
@@ -239,13 +551,20 @@ function normalizeClient(client) {
 }
 
 function normalizeIncome(income) {
-  const incomeType = income?.incomeType === INCOME_TYPES.SOCIAL
-    ? INCOME_TYPES.SOCIAL
-    : INCOME_TYPES.CLIENT;
+  let incomeType = INCOME_TYPES.CLIENT;
+  if (income?.incomeType === INCOME_TYPES.SOCIAL) incomeType = INCOME_TYPES.SOCIAL;
+  else if (income?.incomeType === INCOME_TYPES.CUSTOM) incomeType = INCOME_TYPES.CUSTOM;
+
   let status = income?.status === INCOME_STATUS.PAID ? INCOME_STATUS.PAID : INCOME_STATUS.PENDING;
   if (incomeType === INCOME_TYPES.SOCIAL) {
     status = INCOME_STATUS.PAID;
   }
+
+  let customTypeId = null;
+  if (incomeType === INCOME_TYPES.CUSTOM) {
+    customTypeId = String(income?.customTypeId || '').trim() || null;
+  }
+
   return {
     id: income?.id || crypto.randomUUID(),
     scheduleId: income?.scheduleId != null && income.scheduleId !== ''
@@ -253,6 +572,7 @@ function normalizeIncome(income) {
       : null,
     date: typeof income?.date === 'string' ? income.date.split('T')[0] : '',
     incomeType,
+    customTypeId,
     clientName: String(income?.clientName || '').trim(),
     ratePerMinute: income?.ratePerMinute != null ? Number(income.ratePerMinute) : null,
     durationSeconds: income?.durationSeconds != null ? Number(income.durationSeconds) : null,
@@ -267,11 +587,41 @@ function isSocialIncomeStatusLocked(income) {
   return income?.incomeType === INCOME_TYPES.SOCIAL;
 }
 
-/** 30 秒计费规则：Math.ceil(秒数/30) * 0.5 分钟 */
+function calculateRemainderMinutes(remainderSeconds, rule) {
+  const rem = Math.max(0, Math.floor(Number(remainderSeconds) || 0));
+  if (rem <= 0) return 0;
+
+  if (rule.scheme === TIME_BILLING_SCHEMES.REMAINDER_TIERS) {
+    let t1 = Number(rule.tier1OverSeconds);
+    let t2 = Number(rule.tier2OverSeconds);
+    if (!Number.isFinite(t1)) t1 = 10;
+    if (!Number.isFinite(t2)) t2 = 30;
+    if (t2 < t1) {
+      const swap = t1;
+      t1 = t2;
+      t2 = swap;
+    }
+    // 满（≥）多少秒算多少：与设置文案一致
+    let billed = 0;
+    if (rem >= t1) billed = Number(rule.tier1Minutes) || 0;
+    if (rem >= t2) billed = Number(rule.tier2Minutes) || 0;
+    return billed;
+  }
+
+  // 默认：不到 30 秒算半分钟，超过 30 秒算 1 分钟
+  const threshold = Number(rule.thresholdSeconds) || 30;
+  if (rem <= threshold) return Number(rule.lowMinutes) || 0;
+  return Number(rule.highMinutes) || 0;
+}
+
+/** 按时计费：完整分钟 + 零头进位（标准来自设置） */
 function calculateBilledMinutes(durationSeconds) {
   const seconds = Number(durationSeconds);
   if (!Number.isFinite(seconds) || seconds <= 0) return 0;
-  return Math.ceil(seconds / BILLING_SECONDS_PER_UNIT) * BILLING_MINUTES_PER_UNIT;
+  const rule = getTimeBillingRule();
+  const wholeMinutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  return wholeMinutes + calculateRemainderMinutes(remainder, rule);
 }
 
 function calculateClientFinalPrice(durationSeconds, ratePerMinute) {
@@ -314,6 +664,7 @@ function loadData() {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return structuredClone(DEFAULT_DATA);
     const parsed = JSON.parse(raw);
+    settingsCacheDuringLoad = normalizeSettings(parsed.settings);
     const rawEvents = Array.isArray(parsed.events) ? parsed.events : [];
     const events = migrateEvents(rawEvents);
     const wasLegacy = rawEvents.some(
@@ -331,9 +682,12 @@ function loadData() {
       incomes,
       categories: Array.isArray(parsed.categories) ? parsed.categories : DEFAULT_DATA.categories,
       profile: normalizeProfile(parsed.profile),
+      settings: settingsCacheDuringLoad,
     };
+    settingsCacheDuringLoad = null;
     const shouldPersist = wasLegacy
       || !parsed.profile
+      || !parsed.settings
       || !Array.isArray(parsed.clients)
       || !Array.isArray(parsed.incomes)
       || needsScheduleSchemaMigration(rawEvents);
@@ -342,6 +696,7 @@ function loadData() {
     }
     return data;
   } catch {
+    settingsCacheDuringLoad = null;
     return structuredClone(DEFAULT_DATA);
   }
 }
@@ -373,25 +728,56 @@ function normalizeStatus(type, status) {
   if (type === '客户') {
     return CLIENT_STATUSES.includes(status) ? status : '已排期';
   }
+  if (type === '自媒体') {
+    if (MEDIA_STATUSES.includes(status)) return status;
+    if (MEDIA_STATUSES.includes(type)) return type;
+    return '剪辑';
+  }
+  if (isCustomEventType(type)) {
+    return CUSTOM_STATUSES.includes(status) ? status : '未完成';
+  }
   if (MEDIA_STATUSES.includes(status)) return status;
-  if (MEDIA_STATUSES.includes(type)) return type;
   return '剪辑';
 }
 
 function normalizeEvent(evt) {
-  const type = EVENT_TYPES.includes(evt.type) ? evt.type : (evt.type || '自媒体');
-  const incomeType = evt.incomeType === INCOME_TYPES.SOCIAL || evt.incomeType === INCOME_TYPES.CLIENT
-    ? evt.incomeType
-    : eventTypeToIncomeType(type);
+  let type = evt.type || '自媒体';
+  if (!isValidEventType(type)) {
+    type = EVENT_TYPES.includes(type) ? type : '自媒体';
+  }
+
+  let incomeType = eventTypeToIncomeType(type);
+  if (
+    evt.incomeType === INCOME_TYPES.SOCIAL
+    || evt.incomeType === INCOME_TYPES.CLIENT
+    || evt.incomeType === INCOME_TYPES.CUSTOM
+  ) {
+    // 仅在与 type 推导一致时保留（避免脏数据）
+    const derived = eventTypeToIncomeType(type);
+    incomeType = derived;
+  }
+
   const legacyIncome = Number(evt.income) || 0;
   const isClient = incomeType === INCOME_TYPES.CLIENT;
+  const isSocial = incomeType === INCOME_TYPES.SOCIAL;
+  const isCustom = incomeType === INCOME_TYPES.CUSTOM;
 
   let socialAmount = null;
-  if (!isClient) {
+  if (isSocial) {
     if (evt.socialAmount != null && evt.socialAmount !== '') {
       socialAmount = Number(evt.socialAmount) || 0;
     } else if (legacyIncome > 0) {
       socialAmount = legacyIncome;
+    }
+  }
+
+  let clientFlatAmount = null;
+  if (isClient || isCustom) {
+    if (evt.clientFlatAmount != null && evt.clientFlatAmount !== '') {
+      clientFlatAmount = Number(evt.clientFlatAmount);
+      if (!Number.isFinite(clientFlatAmount) || clientFlatAmount <= 0) clientFlatAmount = null;
+    } else if (isCustom && legacyIncome > 0) {
+      clientFlatAmount = legacyIncome;
     }
   }
 
@@ -406,11 +792,16 @@ function normalizeEvent(evt) {
     notes: evt.notes || '',
     clientId: evt.clientId || null,
     clientName: String(
-      evt.clientName ?? (isClient ? (evt.client || '') : (evt.socialProject || evt.projectName || ''))
+      evt.clientName ?? (
+        isClient
+          ? (evt.client || '')
+          : (evt.socialProject || evt.projectName || '')
+      )
     ).trim(),
-    durationSeconds: evt.durationSeconds != null ? Number(evt.durationSeconds) : null,
+    durationSeconds: isClient && evt.durationSeconds != null ? Number(evt.durationSeconds) : null,
+    clientFlatAmount,
     incomeType,
-    socialProject: isClient ? null : String(evt.socialProject || evt.projectName || '').trim(),
+    socialProject: isSocial ? String(evt.socialProject || evt.projectName || '').trim() : null,
     socialAmount,
     incomeGenerated: Boolean(evt.incomeGenerated),
   };
@@ -444,24 +835,30 @@ function formatEventTitle(evt) {
     const emoji = STATUS_EMOJIS[status] || STATUS_EMOJIS['已排期'];
     return `${emoji} ${name}`;
   }
+  if (isCustomEventType(type)) {
+    const name = evt.projectName || getCustomTypeLabel(type);
+    const status = CUSTOM_STATUSES.includes(evt.status) ? evt.status : '未完成';
+    const emoji = STATUS_EMOJIS[status] || '';
+    return emoji ? `${emoji} ${name}` : name;
+  }
   const name = evt.projectName || '';
-  return name ? `${name}·${type}` : type;
+  const typeLabel = type === '自媒体' ? getTypeLabel('social') : type;
+  return name ? `${name}·${typeLabel}` : typeLabel;
 }
 
 function getEventColor(type, status) {
   if (type === '客户') {
-    return CLIENT_EVENT_BG;
+    return getTypeColor('client');
   }
-  if (MEDIA_STATUSES.includes(status)) return STATUS_COLORS[status];
-  return STATUS_COLORS['剪辑'];
+  if (isCustomEventType(type)) {
+    return getCustomTypeColor(type);
+  }
+  const mediaStatus = MEDIA_STATUSES.includes(status) ? status : '剪辑';
+  return getSocialStatusColor(mediaStatus);
 }
 
 function getEventTextColor(type, status) {
-  if (type === '客户') {
-    return CLIENT_EVENT_TEXT;
-  }
-  if (status === '脚本' || status === '拍摄') return '#111111';
-  return '#FFFFFF';
+  return contrastTextColor(getEventColor(type, status));
 }
 
 function getEventTypeColor(typeOrEvt, status) {
@@ -533,10 +930,31 @@ function findClientById(clientId) {
   return appData.clients.find((c) => c.id === clientId) || null;
 }
 
+function normalizeNameKey(name) {
+  return String(name || '').trim().toLowerCase();
+}
+
+/** 名称宽松匹配：相等或互相包含（不区分大小写，支持英文） */
+function namesLooselyMatch(a, b) {
+  const na = normalizeNameKey(a);
+  const nb = normalizeNameKey(b);
+  if (!na || !nb) return false;
+  return na === nb || na.includes(nb) || nb.includes(na);
+}
+
+function findClientsByNameLoose(name) {
+  const target = normalizeNameKey(name);
+  if (!target) return [];
+  const exact = appData.clients.filter((c) => normalizeNameKey(c.name) === target);
+  if (exact.length > 0) return exact;
+  return appData.clients.filter((c) => namesLooselyMatch(c.name, target));
+}
+
 function findClientByName(name) {
-  const trimmed = String(name || '').trim();
-  if (!trimmed) return null;
-  return appData.clients.find((c) => c.name === trimmed) || null;
+  const matches = findClientsByNameLoose(name);
+  if (matches.length === 0) return null;
+  const target = normalizeNameKey(name);
+  return matches.find((c) => normalizeNameKey(c.name) === target) || matches[0];
 }
 
 function getScheduleById(scheduleId) {
@@ -556,8 +974,14 @@ function isSocialSchedule(schedule) {
   return (schedule?.incomeType || eventTypeToIncomeType(schedule?.type)) === INCOME_TYPES.SOCIAL;
 }
 
+function isCustomSchedule(schedule) {
+  return (schedule?.incomeType || eventTypeToIncomeType(schedule?.type)) === INCOME_TYPES.CUSTOM;
+}
+
 function isScheduleDelivered(schedule) {
-  return schedule?.status === '已交付';
+  if (!schedule) return false;
+  if (isCustomSchedule(schedule)) return schedule.status === '已完成';
+  return schedule.status === '已交付';
 }
 
 /** 规范化客户档期状态（兼容旧数据/空白） */
@@ -685,11 +1109,23 @@ function parseDeliveryText(text, refDate = new Date()) {
     /(?:时长\s*)?([一二三四五六七八九十两〇零\d]+)\s*分\s*([一二三四五六七八九十两〇零\d]+)\s*秒/g,
     ' '
   );
+  cleaned = cleaned.replace(/(\d+)\s*[:：]\s*(\d+)/g, ' ');
+  cleaned = cleaned.replace(
+    /([一二三四五六七八九十两〇零\d]+)\s*分(?!\s*[一二三四五六七八九十两〇零\d])/g,
+    ' '
+  );
   cleaned = cleaned.replace(/(?:时长\s*)?\d+\s*秒/g, ' ');
+  cleaned = cleaned.replace(
+    /(?:时长\s*)?([一二三四五六七八九十两〇零\d]+)\s*秒/g,
+    ' '
+  );
   cleaned = cleaned.replace(DELIVERY_NOISE_WORDS, ' ');
   cleaned = cleaned.replace(/[、，,.\s]+/g, ' ').trim();
 
-  const nameMatch = cleaned.match(/[\u4e00-\u9fa5]{1,6}/);
+  // 英文名 / 中文名 / 中英混合（如 David、杠金、A品牌）
+  const nameMatch = cleaned.match(
+    /[A-Za-z][A-Za-z0-9\-']*(?:\s+[A-Za-z][A-Za-z0-9\-']*){0,3}|[\u4e00-\u9fa5]{1,12}|[A-Za-z\u4e00-\u9fa5][A-Za-z0-9\u4e00-\u9fa5\-']{0,31}/
+  );
   if (!nameMatch) {
     return { ok: false, error: '无法识别客户名称' };
   }
@@ -697,7 +1133,7 @@ function parseDeliveryText(text, refDate = new Date()) {
   return {
     ok: true,
     kind: 'client',
-    clientName: nameMatch[0],
+    clientName: nameMatch[0].trim(),
     date,
     durationSeconds,
   };
@@ -714,21 +1150,19 @@ function schedulesMatchClientName(schedule, clientName) {
   const target = String(clientName || '').trim();
   if (!target) return false;
 
-  const aliases = new Set(
-    [
-      getScheduleDisplayName(schedule),
-      schedule.clientName,
-      schedule.client,
-      schedule.projectName,
-    ]
-      .map((s) => String(s || '').trim())
-      .filter(Boolean)
-  );
+  const aliases = [
+    getScheduleDisplayName(schedule),
+    schedule.clientName,
+    schedule.client,
+    schedule.projectName,
+  ]
+    .map((s) => String(s || '').trim())
+    .filter(Boolean);
 
-  if (aliases.has(target)) return true;
+  if (aliases.some((alias) => namesLooselyMatch(alias, target))) return true;
 
   const linked = resolveClientForSchedule(schedule, target);
-  return Boolean(linked && linked.name === target);
+  return Boolean(linked && namesLooselyMatch(linked.name, target));
 }
 
 function getUnpublishedSocialSchedules() {
@@ -1057,7 +1491,11 @@ function formatDeliveryPickLabel(schedule) {
 function canDeleteIncomeFromList(income) {
   if (income.source === INCOME_SOURCE.MANUAL) return true;
   return income.source === INCOME_SOURCE.AUTO
-    && (income.incomeType === INCOME_TYPES.CLIENT || income.incomeType === INCOME_TYPES.SOCIAL);
+    && (
+      income.incomeType === INCOME_TYPES.CLIENT
+      || income.incomeType === INCOME_TYPES.SOCIAL
+      || income.incomeType === INCOME_TYPES.CUSTOM
+    );
 }
 
 function deleteIncomeById(incomeId) {
@@ -1131,17 +1569,48 @@ function syncScheduleOnClientIncomePaid(income) {
   }
 }
 
+function syncScheduleOnCustomIncomePaid(income) {
+  if (!income?.scheduleId || income.incomeType !== INCOME_TYPES.CUSTOM) return;
+  if (income.status !== INCOME_STATUS.PAID) return;
+
+  const schedule = getScheduleById(income.scheduleId);
+  if (!schedule || !isCustomSchedule(schedule)) return;
+
+  const patch = {};
+  if (schedule.status !== '已完成') {
+    patch.status = '已完成';
+  }
+  if (!schedule.incomeGenerated) {
+    patch.incomeGenerated = true;
+  }
+  if (Object.keys(patch).length > 0) {
+    updateScheduleInStore(income.scheduleId, patch);
+  }
+}
+
+function syncScheduleOnIncomePaid(income) {
+  if (income?.incomeType === INCOME_TYPES.CLIENT) {
+    syncScheduleOnClientIncomePaid(income);
+    return;
+  }
+  if (income?.incomeType === INCOME_TYPES.CUSTOM) {
+    syncScheduleOnCustomIncomePaid(income);
+  }
+}
+
 function createClientIncomeFromDelivery(schedule, { durationSeconds, clientRecord } = {}) {
   if (!schedule) return { ok: false, error: '档期不存在' };
   if (!isClientSchedule(schedule)) return { ok: false, error: '非客户档期' };
-  if (!isClientScheduleIncomeMatchable(schedule)) {
-    if (schedule.incomeGenerated || hasIncomeForSchedule(schedule.id)) {
-      return { ok: false, error: '该档期已生成收入，请勿重复确认' };
-    }
+  if (getClientScheduleStatus(schedule) !== '审核中') {
     const statusLabel = getClientScheduleStatus(schedule) || '未知';
-    return { ok: false, error: `该档期状态为「${statusLabel}」，不可关联收入，需为审核中` };
+    return { ok: false, error: `该档期状态为「${statusLabel}」，按时计费需先改为审核中` };
   }
-  if (hasIncomeForSchedule(schedule.id)) {
+
+  const existing = findAutoIncomeForSchedule(schedule.id);
+  if (existing?.status === INCOME_STATUS.PAID) {
+    return { ok: false, error: '该档期收入已到账，无法再用时长覆盖' };
+  }
+  if (!existing && hasIncomeForSchedule(schedule.id)) {
     return { ok: false, error: '该档期已有收入记录，请先删除后再重新录入' };
   }
 
@@ -1168,7 +1637,7 @@ function createClientIncomeFromDelivery(schedule, { durationSeconds, clientRecor
     return { ok: false, error: '缺少有效时长或金额，无法生成收入' };
   }
 
-  const income = normalizeIncome({
+  const patchBase = {
     scheduleId: schedule.id,
     date: schedule.date,
     incomeType: INCOME_TYPES.CLIENT,
@@ -1179,9 +1648,18 @@ function createClientIncomeFromDelivery(schedule, { durationSeconds, clientRecor
     finalPrice,
     status: INCOME_STATUS.PENDING,
     source: INCOME_SOURCE.AUTO,
-  });
+  };
 
-  appData.incomes.push(income);
+  let income;
+  if (existing) {
+    const idx = appData.incomes.findIndex((i) => i.id === existing.id);
+    income = normalizeIncome({ ...existing, ...patchBase, id: existing.id });
+    if (idx !== -1) appData.incomes[idx] = income;
+  } else {
+    income = normalizeIncome(patchBase);
+    appData.incomes.push(income);
+  }
+
   updateScheduleInStore(schedule.id, {
     durationSeconds: seconds > 0 ? seconds : schedule.durationSeconds,
     clientId: client?.id || schedule.clientId,
@@ -1190,6 +1668,126 @@ function createClientIncomeFromDelivery(schedule, { durationSeconds, clientRecor
   });
 
   return { ok: true, income };
+}
+
+function upsertClientFlatIncomeFromSchedule(schedule) {
+  if (!schedule || !isClientSchedule(schedule)) return { ok: false, error: '非客户档期' };
+  const amount = Number(schedule.clientFlatAmount);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return { ok: false, error: '缺少有效一口价金额' };
+  }
+
+  const existing = findAutoIncomeForSchedule(schedule.id);
+  if (existing?.status === INCOME_STATUS.PAID) {
+    return { ok: true, income: existing, skipped: true };
+  }
+  if (!existing && hasIncomeForSchedule(schedule.id)) {
+    return { ok: false, error: '该档期已有收入记录，请先删除后再重新录入' };
+  }
+
+  const client = resolveClientForSchedule(schedule);
+  const patchBase = {
+    scheduleId: schedule.id,
+    date: schedule.date,
+    incomeType: INCOME_TYPES.CLIENT,
+    clientName: schedule.clientName || schedule.client || client?.name || '',
+    ratePerMinute: null,
+    durationSeconds: null,
+    billedMinutes: null,
+    finalPrice: amount,
+    status: INCOME_STATUS.PENDING,
+    source: INCOME_SOURCE.AUTO,
+  };
+
+  let income;
+  if (existing) {
+    const idx = appData.incomes.findIndex((i) => i.id === existing.id);
+    income = normalizeIncome({ ...existing, ...patchBase, id: existing.id });
+    if (idx !== -1) appData.incomes[idx] = income;
+  } else {
+    income = normalizeIncome(patchBase);
+    appData.incomes.push(income);
+  }
+
+  updateScheduleInStore(schedule.id, {
+    clientId: client?.id || schedule.clientId,
+    clientName: schedule.clientName || schedule.client || client?.name || '',
+    clientFlatAmount: amount,
+    incomeGenerated: true,
+  });
+
+  return { ok: true, income };
+}
+
+function syncClientTimeScheduleIncome(current) {
+  if (!isClientSchedule(current)) return { ok: true, skipped: true };
+  if (getClientScheduleStatus(current) !== '审核中') return { ok: true, skipped: true };
+  const seconds = Number(current.durationSeconds) || 0;
+  if (seconds <= 0) return { ok: true, skipped: true };
+  return createClientIncomeFromDelivery(current, { durationSeconds: seconds });
+}
+
+function syncClientFlatScheduleIncome(current) {
+  if (!isClientSchedule(current)) return { ok: true, skipped: true };
+  const amount = Number(current.clientFlatAmount);
+  if (!Number.isFinite(amount) || amount <= 0) return { ok: true, skipped: true };
+  return upsertClientFlatIncomeFromSchedule(current);
+}
+
+function upsertCustomFlatIncomeFromSchedule(schedule) {
+  if (!schedule || !isCustomSchedule(schedule)) return { ok: false, error: '非自定义类型档期' };
+  const amount = Number(schedule.clientFlatAmount);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return { ok: false, error: '缺少有效金额' };
+  }
+
+  const existing = findAutoIncomeForSchedule(schedule.id);
+  if (existing?.status === INCOME_STATUS.PAID) {
+    return { ok: true, income: existing, skipped: true };
+  }
+  if (!existing && hasIncomeForSchedule(schedule.id)) {
+    return { ok: false, error: '该档期已有收入记录，请先删除后再重新录入' };
+  }
+
+  const name = schedule.projectName || schedule.clientName || getCustomTypeLabel(schedule.type);
+  const patchBase = {
+    scheduleId: schedule.id,
+    date: schedule.date,
+    incomeType: INCOME_TYPES.CUSTOM,
+    customTypeId: schedule.type,
+    clientName: name,
+    ratePerMinute: null,
+    durationSeconds: null,
+    billedMinutes: null,
+    finalPrice: amount,
+    status: INCOME_STATUS.PENDING,
+    source: INCOME_SOURCE.AUTO,
+  };
+
+  let income;
+  if (existing) {
+    const idx = appData.incomes.findIndex((i) => i.id === existing.id);
+    income = normalizeIncome({ ...existing, ...patchBase, id: existing.id });
+    if (idx !== -1) appData.incomes[idx] = income;
+  } else {
+    income = normalizeIncome(patchBase);
+    appData.incomes.push(income);
+  }
+
+  updateScheduleInStore(schedule.id, {
+    clientName: name,
+    clientFlatAmount: amount,
+    incomeGenerated: true,
+  });
+
+  return { ok: true, income };
+}
+
+function syncCustomFlatScheduleIncome(current) {
+  if (!isCustomSchedule(current)) return { ok: true, skipped: true };
+  const amount = Number(current.clientFlatAmount);
+  if (!Number.isFinite(amount) || amount <= 0) return { ok: true, skipped: true };
+  return upsertCustomFlatIncomeFromSchedule(current);
 }
 
 function createSocialIncomeFromSchedule(schedule) {
@@ -1250,40 +1848,22 @@ function syncSocialScheduleIncome(previous, current) {
   clearSiblingSocialAmounts(current);
 }
 
-function tryLegacyClientIncomeOnDelivered(schedule) {
-  const result = createClientIncomeFromDelivery(schedule, {
-    durationSeconds: schedule.durationSeconds || 0,
-  });
-  if (!result.ok) {
-    console.warn('状态改为已交付但未能自动生成收入:', result.error);
-  }
-  return result;
-}
-
-function wasClientScheduleIncomeMatchable(schedule) {
-  if (!schedule || !isClientSchedule(schedule)) return false;
-  if (schedule.incomeGenerated || hasIncomeForSchedule(schedule.id)) return false;
-  return DELIVERY_MATCHABLE_CLIENT_STATUSES.includes(getClientScheduleStatus(schedule));
-}
-
 function handlePostScheduleSave(previous, current) {
   if (isSocialSchedule(current)) {
     syncSocialScheduleIncome(previous, current);
-    return;
+    return { ok: true };
   }
 
-  if (isClientSchedule(current)) {
-    const wasMatchable = wasClientScheduleIncomeMatchable(previous);
-    const nowMatchable = wasClientScheduleIncomeMatchable(current);
-    if (
-      !wasMatchable
-      && nowMatchable
-      && !current.incomeGenerated
-      && !hasIncomeForSchedule(current.id)
-    ) {
-      tryLegacyClientIncomeOnDelivered(current);
-    }
+  if (isCustomSchedule(current)) {
+    return syncCustomFlatScheduleIncome(current);
   }
+
+  if (!isClientSchedule(current)) return { ok: true };
+
+  if (getScheduleBillingMode(current) === CLIENT_BILLING.FLAT) {
+    return syncClientFlatScheduleIncome(current);
+  }
+  return syncClientTimeScheduleIncome(current);
 }
 
 function formatDeliveryErrorMessage(parsed) {
@@ -1313,6 +1893,10 @@ function formatDeliveryErrorMessage(parsed) {
     if (blockedByIncome.length === reviewing.length) {
       return `「${target}」在${dateLabel || '对应日期'}的审核中档期已生成收入，请勿重复确认。如需重新录入，请先删除对应收入记录。`;
     }
+  }
+
+  if (byName.length === 0) {
+    return `未找到该客户「${target}」，请检查名称或手动补录收入。`;
   }
 
   if (dateLabel) {
@@ -1481,14 +2065,71 @@ function incomesInYear(date) {
   });
 }
 
+function getIncomeSliceKey(income) {
+  if (income.incomeType === INCOME_TYPES.CLIENT) return 'client';
+  if (income.incomeType === INCOME_TYPES.SOCIAL) return 'social';
+  if (income.incomeType === INCOME_TYPES.CUSTOM) {
+    return `custom:${income.customTypeId || 'unknown'}`;
+  }
+  return 'other';
+}
+
+function getIncomeSliceMeta(key) {
+  if (key === 'client') {
+    return { label: getTypeLabel('client'), color: getTypeColor('client') };
+  }
+  if (key === 'social') {
+    return { label: getTypeLabel('social'), color: getTypeColor('social') };
+  }
+  if (key.startsWith('custom:')) {
+    const id = key.slice('custom:'.length);
+    const t = findCustomTypeById(id);
+    return {
+      label: t?.label || '自定义',
+      color: t?.color || CUSTOM_TYPE_COLORS[0],
+    };
+  }
+  return { label: '其他', color: '#94a3b8' };
+}
+
 function getIncomeDistributionTotals(incomes) {
-  const clientTotal = incomes
+  const paid = incomes.filter((i) => i.status === INCOME_STATUS.PAID);
+  const clientTotal = paid
     .filter((i) => i.incomeType === INCOME_TYPES.CLIENT)
     .reduce((sum, i) => sum + i.finalPrice, 0);
-  const socialTotal = incomes
+  const socialTotal = paid
     .filter((i) => i.incomeType === INCOME_TYPES.SOCIAL)
     .reduce((sum, i) => sum + i.finalPrice, 0);
-  return { clientTotal, socialTotal };
+  const customTotal = paid
+    .filter((i) => i.incomeType === INCOME_TYPES.CUSTOM)
+    .reduce((sum, i) => sum + i.finalPrice, 0);
+  return { clientTotal, socialTotal, customTotal };
+}
+
+/** 饼图分片：预置 + 各自定义类型（仅已到账，与本月收入口径一致） */
+function getIncomeDistributionSlices(incomes) {
+  const totals = new Map();
+  incomes.forEach((income) => {
+    if (income.status !== INCOME_STATUS.PAID) return;
+    const key = getIncomeSliceKey(income);
+    totals.set(key, (totals.get(key) || 0) + (Number(income.finalPrice) || 0));
+  });
+
+  const order = ['client', 'social', ...getCustomEventTypes().map((t) => `custom:${t.id}`)];
+  const slices = [];
+  order.forEach((key) => {
+    const total = totals.get(key) || 0;
+    if (total <= 0) return;
+    const meta = getIncomeSliceMeta(key);
+    slices.push({ key, total, label: meta.label, color: meta.color });
+    totals.delete(key);
+  });
+  totals.forEach((total, key) => {
+    if (total <= 0) return;
+    const meta = getIncomeSliceMeta(key);
+    slices.push({ key, total, label: meta.label, color: meta.color });
+  });
+  return slices;
 }
 
 function getMonthIncomeTotal(date) {
@@ -1504,20 +2145,25 @@ function getMonthPaidBreakdown(date) {
   const social = monthIncomes
     .filter((i) => i.incomeType === INCOME_TYPES.SOCIAL && i.status === INCOME_STATUS.PAID)
     .reduce((sum, i) => sum + i.finalPrice, 0);
-  return { total: client + social, client, social };
+  const custom = monthIncomes
+    .filter((i) => i.incomeType === INCOME_TYPES.CUSTOM && i.status === INCOME_STATUS.PAID)
+    .reduce((sum, i) => sum + i.finalPrice, 0);
+  return { total: client + social + custom, client, social, custom };
 }
 
 function getYearPaidBreakdown(year) {
   let total = 0;
   let client = 0;
   let social = 0;
+  let custom = 0;
   for (let month = 0; month < 12; month += 1) {
     const breakdown = getMonthPaidBreakdown(new Date(year, month, 1));
     total += breakdown.total;
     client += breakdown.client;
     social += breakdown.social;
+    custom += breakdown.custom;
   }
-  return { total, client, social };
+  return { total, client, social, custom };
 }
 
 function getYearMonthlyArchive(year) {
@@ -1636,84 +2282,12 @@ function resolveWeekday(char, refDate) {
 
 const WORK_TYPES = ['剪辑', '脚本', '拍摄', '发布'];
 
-const RELATIVE_DATE_RULES = [
-  { pattern: /^大后天/, offset: 3 },
-  { pattern: /^后天/, offset: 2 },
-  { pattern: /^明天/, offset: 1 },
-  { pattern: /^今天/, offset: 0 },
+const QUICK_ADD_RELATIVE_SCAN = [
+  { pattern: /大后天/g, offset: 3 },
+  { pattern: /后天/g, offset: 2 },
+  { pattern: /明天/g, offset: 1 },
+  { pattern: /今天/g, offset: 0 },
 ];
-
-const ACTION_WORDS = /我要|要写|要给|想要|给|做|要/g;
-
-function extractDatesFromText(raw, today) {
-  const dates = [];
-  const matchedParts = [];
-  let lastMonth = today.getMonth() + 1;
-  let pos = 0;
-
-  while (pos < raw.length) {
-    let matched = false;
-    const rest = raw.slice(pos);
-
-    for (const rule of RELATIVE_DATE_RULES) {
-      const m = rest.match(rule.pattern);
-      if (!m) continue;
-      const d = new Date(today);
-      d.setDate(d.getDate() + rule.offset);
-      dates.push(startOfDay(d));
-      matchedParts.push(m[0]);
-      pos += m[0].length;
-      matched = true;
-      break;
-    }
-    if (matched) continue;
-
-    let m = rest.match(/^(\d{1,2})\s*月\s*(\d{1,2})\s*[日号]/);
-    if (m) {
-      lastMonth = parseInt(m[1], 10);
-      const d = resolveMonthDay(lastMonth, parseInt(m[2], 10), today);
-      if (d) dates.push(d);
-      matchedParts.push(m[0]);
-      pos += m[0].length;
-      continue;
-    }
-
-    m = rest.match(/^(\d{1,2})\s*月\s*(\d{1,2})(?!\s*[日号])/);
-    if (m) {
-      lastMonth = parseInt(m[1], 10);
-      const d = resolveMonthDay(lastMonth, parseInt(m[2], 10), today);
-      if (d) dates.push(d);
-      matchedParts.push(m[0]);
-      pos += m[0].length;
-      continue;
-    }
-
-    m = rest.match(/^(\d{1,2})\s*[日号]/);
-    if (m) {
-      const d = resolveMonthDay(lastMonth, parseInt(m[1], 10), today);
-      if (d) dates.push(d);
-      matchedParts.push(m[0]);
-      pos += m[0].length;
-      continue;
-    }
-
-    if (/^[、，,\s]/.test(rest)) {
-      pos += 1;
-      continue;
-    }
-
-    pos += 1;
-  }
-
-  return { dates, matchedParts };
-}
-
-function detectEventType(raw) {
-  const endsWithCustomerName = /[\u4e00-\u9fa5a-zA-Z0-9]+客户$/.test(raw);
-  if (/客户/.test(raw) && !endsWithCustomerName) return '客户';
-  if (/写|脚本|拍摄|拍|剪辑|剪|发布|发/.test(raw)) return '自媒体';
-  return null;
-}
 
 function removeDateTokens(text, matchedParts) {
   let cleaned = text;
@@ -1725,44 +2299,19 @@ function removeDateTokens(text, matchedParts) {
   return cleaned;
 }
 
-function removeTypeKeywords(text, type) {
-  if (type === '客户') {
-    return text.replace(/客户[：:\s]*/g, '');
-  }
-  return text.replace(/脚本|写|拍摄|拍|剪辑|剪|发布|发/g, '');
-}
-
 function detectMediaStatus(raw) {
-  if (/写|脚本/.test(raw)) return '脚本';
+  if (/脚本|写/.test(raw)) return '脚本';
   if (/拍摄|拍/.test(raw)) return '拍摄';
   if (/剪辑|剪/.test(raw)) return '剪辑';
   if (/发布|发/.test(raw)) return '发布';
   return '剪辑';
 }
 
-function buildEventTitle(type, customer, brand) {
-  if (type === '客户') return customer || '客户';
-  if (brand) return `${brand}·${type}`;
-  return type;
-}
-
-function parseEventText(text) {
-  const raw = text.trim();
-  const empty = {
-    dates: [],
-    type: '自媒体',
-    customer: null,
-    brand: null,
-    title: '自媒体',
-    status: '剪辑',
-  };
-  if (!raw) return empty;
-
-  const today = startOfDay(new Date());
+function extractQuickAddDates(raw, today = startOfDay(new Date())) {
   let lastMonth = today.getMonth() + 1;
   const candidates = [];
 
-  RELATIVE_DATE_RULES.forEach((rule) => {
+  QUICK_ADD_RELATIVE_SCAN.forEach((rule) => {
     const re = new RegExp(rule.pattern.source, 'g');
     let m;
     while ((m = re.exec(raw)) !== null) {
@@ -1827,41 +2376,145 @@ function parseEventText(text) {
     matchedParts.push(c.part);
   });
 
-  const endsWithCustomerName = /[\u4e00-\u9fa5a-zA-Z0-9]+客户$/.test(raw);
-  let type = '自媒体';
-  if (/客户/.test(raw) && !endsWithCustomerName) {
-    type = '客户';
-  } else if (/写|脚本|拍摄|拍|剪辑|剪|发布|发/.test(raw)) {
-    type = '自媒体';
+  return { dates, matchedParts };
+}
+
+function normalizeQuickAddName(text) {
+  return String(text || '')
+    .replace(/[：:]/g, ' ')
+    .replace(/[、，,\s]+/g, ' ')
+    .trim();
+}
+
+function removeKeywordOnce(text, keyword) {
+  const src = String(text || '');
+  const key = String(keyword || '');
+  if (!key) return src;
+  const idx = src.indexOf(key);
+  if (idx === -1) return src;
+  return `${src.slice(0, idx)}${src.slice(idx + key.length)}`;
+}
+
+function stripMediaStatusTokens(text, status) {
+  let body = String(text || '');
+  if (status === '脚本') body = body.replace(/脚本|写/g, '');
+  else if (status === '拍摄') body = body.replace(/拍摄|拍/g, '');
+  else if (status === '剪辑') body = body.replace(/剪辑|剪/g, '');
+  else if (status === '发布') body = body.replace(/发布|发/g, '');
+  return normalizeQuickAddName(body);
+}
+
+/** 在文本中找类型关键词；更长的优先（避免「大客户」被拆成「客户」） */
+function resolveQuickAddTypeKeyword(remainder, compact) {
+  const candidates = [];
+
+  if (compact.includes('自媒体')) {
+    candidates.push({ kind: 'social', key: '自媒体', compactKey: '自媒体', len: 3 });
+  }
+  if (compact.includes('客户')) {
+    candidates.push({ kind: 'client', key: '客户', compactKey: '客户', len: 2 });
   }
 
-  let cleaned = removeDateTokens(raw, matchedParts);
-  cleaned = cleaned.replace(ACTION_WORDS, '');
-  cleaned = cleaned.replace(/[、，,\s]+/g, ' ').trim();
+  getCustomEventTypes().forEach((type) => {
+    const label = String(type.label || '').trim();
+    if (!label) return;
+    const compactLabel = label.replace(/\s+/g, '');
+    if (!compactLabel) return;
+    if (compact.includes(compactLabel) || remainder.includes(label)) {
+      candidates.push({
+        kind: 'custom',
+        type,
+        key: label,
+        compactKey: compactLabel,
+        len: compactLabel.length,
+      });
+    }
+  });
 
-  let customer = null;
-  let brand = null;
+  if (!candidates.length) return null;
+  candidates.sort((a, b) => b.len - a.len || a.kind.localeCompare(b.kind));
+  return candidates[0];
+}
 
-  if (type === '客户') {
-    const customerMatch = cleaned.match(/客户[：:\s]*([\u4e00-\u9fa5a-zA-Z]+)/);
-    customer = customerMatch ? customerMatch[1] : null;
-  } else {
-    let nameText = removeTypeKeywords(cleaned, type);
-    nameText = nameText.replace(/[、，,\s\d]+/g, '').trim();
-    const brandMatch = nameText.match(/[\u4e00-\u9fa5a-zA-Z0-9]+/);
-    brand = brandMatch ? brandMatch[0] : null;
+/**
+ * 关键词识别（语序不限）：
+ * - 客户 + 名称 + 日期（可多日期）
+ * - 自媒体 + 项目 + 日期 + 状态
+ * - 自定义类型名 + 项目 + 日期（可与项目紧贴；默认未完成）
+ */
+function parseEventText(text) {
+  const raw = String(text || '').trim();
+  if (!raw) {
+    return { ok: false, error: '请输入档期内容' };
   }
 
-  const title = buildEventTitle(type, customer, brand);
-  const status = type === '客户' ? '已排期' : detectMediaStatus(raw);
+  const today = startOfDay(new Date());
+  const { dates, matchedParts } = extractQuickAddDates(raw, today);
+  const remainder = normalizeQuickAddName(removeDateTokens(raw, matchedParts));
+  const compact = remainder.replace(/\s+/g, '');
+  const hit = resolveQuickAddTypeKeyword(remainder, compact);
 
+  if (!hit) {
+    return {
+      ok: false,
+      error: '无法识别类型关键词。请包含：客户 / 自媒体 / 自定义类型名，以及项目（或客户）名与日期',
+    };
+  }
+
+  if (hit.kind === 'client') {
+    let name = normalizeQuickAddName(removeKeywordOnce(remainder, hit.key));
+    if (name === remainder) name = normalizeQuickAddName(removeKeywordOnce(compact, hit.compactKey));
+    if (!name) {
+      return { ok: false, error: '客户句式需包含客户名/ID。例如：客户张三 3月20日 / 张三客户明天' };
+    }
+    const clientName = name.replace(/\s+/g, '');
+    return {
+      ok: true,
+      dates,
+      type: '客户',
+      customer: clientName,
+      brand: null,
+      title: clientName,
+      status: '已排期',
+    };
+  }
+
+  if (hit.kind === 'social') {
+    let body = normalizeQuickAddName(removeKeywordOnce(remainder, hit.key));
+    if (body === remainder) body = normalizeQuickAddName(removeKeywordOnce(compact, hit.compactKey));
+    const status = detectMediaStatus(body) || detectMediaStatus(raw);
+    body = stripMediaStatusTokens(body, status);
+    if (!body) {
+      return { ok: false, error: '自媒体句式需包含项目名。例如：自媒体品牌A 3月20日 剪辑 / 品牌A自媒体剪辑明天' };
+    }
+    const projectName = body.replace(/\s+/g, '');
+    return {
+      ok: true,
+      dates,
+      type: '自媒体',
+      customer: null,
+      brand: projectName,
+      title: projectName,
+      status,
+    };
+  }
+
+  const label = hit.key;
+  let body = normalizeQuickAddName(removeKeywordOnce(remainder, label));
+  if (body === remainder) body = normalizeQuickAddName(removeKeywordOnce(compact, hit.compactKey));
+  body = normalizeQuickAddName(body.replace(/未完成|已完成|✅/g, ''));
+  if (!body) {
+    return { ok: false, error: `自定义句式需包含项目名。例如：${label}项目A 3月20日 / 项目A${label}明天` };
+  }
+  const projectName = body.replace(/\s+/g, ' ').trim();
   return {
+    ok: true,
     dates,
-    type,
-    customer,
-    brand,
-    title,
-    status,
+    type: hit.type.id,
+    customer: null,
+    brand: projectName,
+    title: projectName,
+    status: '未完成',
   };
 }
 
@@ -1874,6 +2527,12 @@ function quickAddEvent() {
   }
 
   const parsed = parseEventText(rawText);
+  if (!parsed.ok) {
+    alert(parsed.error || '无法识别输入');
+    input.focus();
+    return;
+  }
+
   const datesToUse = parsed.dates.length > 0 ? parsed.dates : [startOfDay(selectedDate)];
   let addedCount = 0;
 
@@ -1899,7 +2558,6 @@ function quickAddEvent() {
       appData.events.push(event);
       handlePostScheduleSave(null, event);
       addedCount += 1;
-      console.log('已添加事件：', parsed.title, '日期：', dateStr);
     } catch (err) {
       console.warn('快速添加事件失败，已跳过:', eventDate, err);
     }
@@ -1912,7 +2570,6 @@ function quickAddEvent() {
 
   input.value = '';
   input.focus();
-  console.log(`总共添加了 ${addedCount} 条事件`, parsed);
 }
 
 function eventsInYear(date) {
@@ -2099,10 +2756,10 @@ function renderIncomeArchiveTrendChart() {
       labels: years.map((year) => `${year}`),
       datasets: [{
         data: totals,
-        borderColor: '#d51b4f',
-        backgroundColor: 'rgba(213, 27, 79, 0.08)',
+        borderColor: getSettings().accent,
+        backgroundColor: accentToSoft(getSettings().accent, 0.08),
         borderWidth: 2,
-        pointBackgroundColor: '#d51b4f',
+        pointBackgroundColor: getSettings().accent,
         pointBorderColor: '#ffffff',
         pointBorderWidth: 2,
         pointRadius: 4,
@@ -2164,6 +2821,36 @@ function renderIncomeArchiveYearNav() {
   if (nextBtn) nextBtn.disabled = currentIndex === -1 || currentIndex >= years.length - 1;
 }
 
+function getYearCustomTypePaidSlices(year) {
+  const start = new Date(year, 0, 1);
+  const end = new Date(year, 11, 31, 23, 59, 59, 999);
+  const totals = new Map();
+
+  appData.incomes.forEach((income) => {
+    if (income.incomeType !== INCOME_TYPES.CUSTOM) return;
+    if (income.status !== INCOME_STATUS.PAID) return;
+    if (!income.date) return;
+    const [y, m, d] = income.date.split('-').map(Number);
+    const incomeDate = new Date(y, m - 1, d);
+    if (incomeDate < start || incomeDate > end) return;
+    const id = income.customTypeId || 'unknown';
+    totals.set(id, (totals.get(id) || 0) + (Number(income.finalPrice) || 0));
+  });
+
+  const slices = [];
+  getCustomEventTypes().forEach((type) => {
+    const total = totals.get(type.id) || 0;
+    if (total <= 0) return;
+    slices.push({ id: type.id, label: type.label, total });
+    totals.delete(type.id);
+  });
+  totals.forEach((total, id) => {
+    if (total <= 0) return;
+    slices.push({ id, label: '自定义', total });
+  });
+  return slices;
+}
+
 function renderIncomeArchiveMonths(year) {
   const grid = $('#incomeArchiveMonthGrid');
   const title = $('#incomeArchiveYearTitle');
@@ -2172,19 +2859,26 @@ function renderIncomeArchiveMonths(year) {
 
   const months = getYearMonthlyArchive(year);
   const yearBreakdown = getYearPaidBreakdown(year);
+  const customSlices = getYearCustomTypePaidSlices(year);
+  const now = new Date();
+  const currentMonth = now.getMonth() + 1;
+  const isCurrentYear = year === now.getFullYear();
 
   if (title) title.textContent = `${year}年各月收入`;
 
   grid.innerHTML = months.map((item) => {
     const label = `${item.month}月`;
     const valueText = formatArchiveAmount(item.total);
+    const currentClass = isCurrentYear && item.month === currentMonth
+      ? ' income-archive__month--current'
+      : '';
     if (item.total > 0) {
       return `
         <button
           type="button"
-          class="income-archive__month-btn"
+          class="income-archive__month-btn${currentClass}"
           data-archive-month="${item.month}"
-          aria-label="${label} ${valueText}"
+          aria-label="${label} ${valueText}${currentClass ? '（本月）' : ''}"
         >
           <span class="income-archive__month-label">${label}</span>
           <span class="income-archive__month-value">${valueText}</span>
@@ -2192,7 +2886,7 @@ function renderIncomeArchiveMonths(year) {
       `;
     }
     return `
-      <div class="income-archive__month income-archive__month--empty" aria-label="${label} 无数据">
+      <div class="income-archive__month income-archive__month--empty${currentClass}" aria-label="${label} 无数据${currentClass ? '（本月）' : ''}">
         <span class="income-archive__month-label">${label}</span>
         <span class="income-archive__month-value">--</span>
       </div>
@@ -2200,10 +2894,18 @@ function renderIncomeArchiveMonths(year) {
   }).join('');
 
   if (summary) {
+    const customParts = customSlices.length > 0
+      ? customSlices
+        .map((s) => `<span class="income-archive__summary-item income-archive__summary-item--muted">${s.label} ${formatArchiveAmount(s.total)}</span>`)
+        .join('')
+      : (yearBreakdown.custom > 0
+        ? `<span class="income-archive__summary-item income-archive__summary-item--muted">自定义 ${formatArchiveAmount(yearBreakdown.custom)}</span>`
+        : '');
     summary.innerHTML = `
       <span class="income-archive__summary-item">合计：${formatArchiveAmount(yearBreakdown.total)}</span>
       <span class="income-archive__summary-item income-archive__summary-item--muted">客户 ${formatArchiveAmount(yearBreakdown.client)}</span>
       <span class="income-archive__summary-item income-archive__summary-item--muted">自媒体 ${formatArchiveAmount(yearBreakdown.social)}</span>
+      ${customParts}
     `;
   }
 }
@@ -2334,7 +3036,7 @@ function eventsInMonth(date) {
 }
 
 function formatCalendarEventTitle(evt) {
-  if (evt.type === '客户') {
+  if (evt.type === '客户' || isCustomEventType(evt.type)) {
     return formatEventTitle(evt);
   }
   if (evt.type === '自媒体') {
@@ -2413,43 +3115,111 @@ function updateSocialAmountFieldState() {
   if (hint) hint.hidden = true;
 }
 
+function readDurationSecondsFromForm() {
+  const minutes = Number($('#eventDurationMin')?.value);
+  const seconds = Number($('#eventDurationSec')?.value);
+  const minPart = Number.isFinite(minutes) && minutes > 0 ? Math.floor(minutes) : 0;
+  const secPart = Number.isFinite(seconds) && seconds > 0 ? Math.floor(seconds) : 0;
+  const total = minPart * 60 + secPart;
+  return total > 0 ? total : null;
+}
+
+function fillDurationFields(durationSeconds) {
+  const minEl = $('#eventDurationMin');
+  const secEl = $('#eventDurationSec');
+  if (!minEl || !secEl) return;
+  const total = Number(durationSeconds);
+  if (!Number.isFinite(total) || total <= 0) {
+    minEl.value = '';
+    secEl.value = '';
+    return;
+  }
+  minEl.value = String(Math.floor(total / 60));
+  secEl.value = String(Math.floor(total % 60));
+}
+
 function updateEventFormForType(type) {
   const isClient = type === '客户';
+  const isSocial = type === '自媒体';
+  const isCustom = isCustomEventType(type);
+  const useTime = isClient && isTimeBillingEnabled();
   const clientGroup = $('#eventClient')?.closest('.form-group');
   const socialAmountGroup = $('#eventSocialAmountGroup');
   const incomeGroup = $('#eventIncomeGroup');
+  const durationGroup = $('#eventDurationGroup');
+  const clientAmountGroup = $('#eventClientAmountGroup');
   const clientInput = $('#eventClient');
   const projectInput = $('#eventProjectName');
+  const amountHint = $('#eventClientAmountGroup .event-form__hint');
 
   if (clientGroup) clientGroup.hidden = !isClient;
-  if (socialAmountGroup) socialAmountGroup.hidden = isClient;
+  if (socialAmountGroup) socialAmountGroup.hidden = !isSocial;
   if (incomeGroup) incomeGroup.hidden = true;
+  if (durationGroup) durationGroup.hidden = !useTime;
+  if (clientAmountGroup) {
+    clientAmountGroup.hidden = !((isClient && !useTime) || isCustom);
+  }
+  if (amountHint) {
+    amountHint.textContent = isCustom
+      ? '可选：填写后保存将生成待收款明细；到账后档期变为已完成'
+      : '填写金额并保存后进入待收款；在收入里标为已到账后计入收入，档期变为已交付';
+  }
 
   if (clientInput) clientInput.required = isClient;
-  if (projectInput) projectInput.required = !isClient;
+  if (projectInput) {
+    projectInput.required = isSocial || isCustom;
+    projectInput.placeholder = isCustom ? '项目 / 事项名称' : '自媒体项目';
+  }
 
   updateSocialAmountFieldState();
 }
 
 function formTypeValue(type) {
-  return type === '客户' ? '客户' : '自媒体';
+  if (type === '客户' || type === '自媒体') return type;
+  if (isCustomEventType(type)) return type;
+  return '自媒体';
 }
 
 function populateStatusSelect(type, selectedValue) {
   const select = $('#eventStatus');
-  const options = type === '客户' ? CLIENT_STATUSES : MEDIA_STATUSES;
+  const options = getStatusesForEventType(type);
   select.innerHTML = options
-    .map((s) => `<option value="${s}">${s}</option>`)
+    .map((s) => {
+      const emoji = STATUS_EMOJIS[s] ? `${STATUS_EMOJIS[s]} ` : '';
+      return `<option value="${s}">${emoji}${s}</option>`;
+    })
     .join('');
-  const fallback = type === '客户' ? '已排期' : '剪辑';
+  const fallback = getDefaultStatusForEventType(type);
   select.value = options.includes(selectedValue) ? selectedValue : fallback;
 }
 
-function populateTypeSelect() {
+function populateTypeSelect(selectedValue) {
   const select = $('#eventType');
-  select.innerHTML = EVENT_TYPES
-    .map((t) => `<option value="${t}">${t}</option>`)
+  if (!select) return;
+  const options = getEventTypeOptions();
+  select.innerHTML = options
+    .map((t) => `<option value="${t.value}">${escapeHtml(t.label)}</option>`)
     .join('');
+  if (selectedValue && options.some((o) => o.value === selectedValue)) {
+    select.value = selectedValue;
+  }
+}
+
+function populateIncomeFilterTypeOptions() {
+  const select = $('#incomeFilterType');
+  if (!select) return;
+  const current = select.value || incomeFilterType || 'all';
+  const options = [
+    { value: 'all', label: '全部类型' },
+    { value: 'client', label: getTypeLabel('client') },
+    { value: 'social', label: getTypeLabel('social') },
+    ...getCustomEventTypes().map((t) => ({ value: `custom:${t.id}`, label: t.label })),
+  ];
+  select.innerHTML = options
+    .map((o) => `<option value="${o.value}">${escapeHtml(o.label)}</option>`)
+    .join('');
+  select.value = options.some((o) => o.value === current) ? current : 'all';
+  incomeFilterType = select.value;
 }
 
 function openModal(data = {}) {
@@ -2460,13 +3230,17 @@ function openModal(data = {}) {
   $('#eventId').value = data.id || '';
   $('#eventProjectName').value = data.projectName || data.title || '';
   $('#eventClient').value = data.client || '';
-  $('#eventType').value = formTypeValue(data.type);
+  populateTypeSelect(formTypeValue(data.type));
   const formType = formTypeValue(data.type);
-  const defaultStatus = formType === '客户' ? '已排期' : '剪辑';
-  populateStatusSelect(formType, data.status || defaultStatus);
+  $('#eventType').value = formType;
+  populateStatusSelect(formType, data.status || getDefaultStatusForEventType(formType));
   updateEventFormForType(formType);
   const socialAmount = data.socialAmount ?? (formType === '自媒体' ? data.income : null);
   $('#eventSocialAmount').value = socialAmount != null && socialAmount !== '' ? socialAmount : '';
+  $('#eventClientFlatAmount').value = data.clientFlatAmount != null && data.clientFlatAmount !== ''
+    ? data.clientFlatAmount
+    : '';
+  fillDurationFields(data.durationSeconds);
   $('#eventIncome').value = data.income ?? '';
   $('#eventNotes').value = data.notes || '';
 
@@ -2495,7 +3269,11 @@ function saveEventFromForm(e) {
   const formType = $('#eventType').value;
   const projectName = $('#eventProjectName').value.trim();
   const scheduleDate = $('#eventDate').value;
+  const status = $('#eventStatus').value;
   let socialAmount = null;
+  let durationSeconds = null;
+  let clientFlatAmount = null;
+
   if (formType === '自媒体') {
     const archive = findSocialProjectArchiveForSchedule(projectName, scheduleDate, id || null);
     const rawAmount = $('#eventSocialAmount').value.trim();
@@ -2517,15 +3295,57 @@ function saveEventFromForm(e) {
     }
   }
 
+  const isCustom = isCustomEventType(formType);
+  if (formType === '客户') {
+    if (isTimeBillingEnabled()) {
+      durationSeconds = readDurationSecondsFromForm();
+      if (status === '审核中' && !(durationSeconds > 0)) {
+        alert('按时计费：状态为「审核中」时请填写成片时长');
+        return;
+      }
+    } else {
+      const rawFlat = $('#eventClientFlatAmount')?.value.trim() || '';
+      if (rawFlat !== '') {
+        clientFlatAmount = parseFloat(rawFlat);
+        if (!Number.isFinite(clientFlatAmount) || clientFlatAmount < 0) {
+          alert('请填写有效金额');
+          return;
+        }
+        if (clientFlatAmount === 0) clientFlatAmount = null;
+      }
+    }
+  } else if (isCustom) {
+    const rawFlat = $('#eventClientFlatAmount')?.value.trim() || '';
+    if (rawFlat !== '') {
+      clientFlatAmount = parseFloat(rawFlat);
+      if (!Number.isFinite(clientFlatAmount) || clientFlatAmount < 0) {
+        alert('请填写有效金额');
+        return;
+      }
+      if (clientFlatAmount === 0) clientFlatAmount = null;
+    }
+  }
+
+  const previous = id ? appData.events.find((ev) => ev.id === id) || null : null;
+  const clientUsesTime = formType === '客户' && isTimeBillingEnabled();
+
   const payload = normalizeEvent({
     id: id || crypto.randomUUID(),
     projectName: $('#eventProjectName').value.trim(),
     client: $('#eventClient').value.trim(),
     type: formType,
-    status: $('#eventStatus').value,
+    status,
     date: $('#eventDate').value,
     income: 0,
     socialAmount,
+    durationSeconds: clientUsesTime
+      ? (durationSeconds ?? previous?.durationSeconds ?? null)
+      : null,
+    clientFlatAmount: (formType === '客户' && !clientUsesTime) || isCustom
+      ? clientFlatAmount
+      : null,
+    clientId: previous?.clientId || null,
+    incomeGenerated: previous?.incomeGenerated || false,
     notes: $('#eventNotes').value.trim(),
   });
 
@@ -2539,12 +3359,10 @@ function saveEventFromForm(e) {
     return;
   }
 
-  if (payload.type !== '客户' && !payload.projectName) {
+  if ((payload.type === '自媒体' || isCustomEventType(payload.type)) && !payload.projectName) {
     alert('请填写项目名称');
     return;
   }
-
-  const previous = id ? appData.events.find((ev) => ev.id === id) || null : null;
 
   if (id) {
     const idx = appData.events.findIndex((ev) => ev.id === id);
@@ -2553,7 +3371,11 @@ function saveEventFromForm(e) {
     appData.events.push(payload);
   }
 
-  handlePostScheduleSave(previous, payload);
+  const postResult = handlePostScheduleSave(previous, payload);
+  if (postResult && postResult.ok === false && postResult.error) {
+    alert(postResult.error);
+  }
+
   saveData();
   closeModal();
   refreshUI();
@@ -2599,8 +3421,14 @@ function formatIncomeDisplayDate(dateStr) {
   return dt.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' });
 }
 
-function formatIncomeTypeLabel(incomeType) {
-  return incomeType === INCOME_TYPES.SOCIAL ? '自媒体' : '客户剪辑';
+function formatIncomeTypeLabel(incomeOrType, customTypeId) {
+  if (incomeOrType && typeof incomeOrType === 'object') {
+    return formatIncomeTypeLabel(incomeOrType.incomeType, incomeOrType.customTypeId);
+  }
+  if (incomeOrType === INCOME_TYPES.SOCIAL) return getTypeLabel('social');
+  if (incomeOrType === INCOME_TYPES.CLIENT) return getTypeLabel('client');
+  if (incomeOrType === INCOME_TYPES.CUSTOM) return getCustomTypeLabel(customTypeId);
+  return '其他';
 }
 
 function formatDurationShort(seconds) {
@@ -2659,10 +3487,47 @@ function toggleIncomeStatus(incomeId) {
   const nextStatus = wasPaid ? INCOME_STATUS.PENDING : INCOME_STATUS.PAID;
   appData.incomes[idx] = normalizeIncome({ ...income, status: nextStatus });
   if (!wasPaid && nextStatus === INCOME_STATUS.PAID) {
-    syncScheduleOnClientIncomePaid(appData.incomes[idx]);
+    syncScheduleOnIncomePaid(appData.incomes[idx]);
   }
   saveData();
   refreshUI();
+}
+
+let incomeFilterType = 'all';
+let incomeFilterStatus = 'all';
+let incomeFilterQuery = '';
+
+function getFilteredIncomesForView(anchor = currentViewDate) {
+  const typeFilter = incomeFilterType;
+  const statusFilter = incomeFilterStatus;
+  const query = String(incomeFilterQuery || '').trim().toLowerCase();
+  return sortIncomesForDisplay(incomesInMonth(anchor)).filter((income) => {
+    if (typeFilter === 'client' && income.incomeType !== INCOME_TYPES.CLIENT) return false;
+    if (typeFilter === 'social' && income.incomeType !== INCOME_TYPES.SOCIAL) return false;
+    if (typeFilter.startsWith('custom:')) {
+      const id = typeFilter.slice('custom:'.length);
+      if (income.incomeType !== INCOME_TYPES.CUSTOM || income.customTypeId !== id) return false;
+    }
+    if (statusFilter === 'pending' && income.status !== INCOME_STATUS.PENDING) return false;
+    if (statusFilter === 'paid' && income.status !== INCOME_STATUS.PAID) return false;
+    if (query) {
+      const name = String(income.clientName || '').toLowerCase();
+      if (!name.includes(query)) return false;
+    }
+    return true;
+  });
+}
+
+function updateIncomeFilterSubtotals(filteredIncomes) {
+  const el = $('#incomeFilterSubtotals');
+  if (!el) return;
+  const pending = filteredIncomes
+    .filter((i) => i.status === INCOME_STATUS.PENDING)
+    .reduce((sum, i) => sum + (Number(i.finalPrice) || 0), 0);
+  const paid = filteredIncomes
+    .filter((i) => i.status === INCOME_STATUS.PAID)
+    .reduce((sum, i) => sum + (Number(i.finalPrice) || 0), 0);
+  el.textContent = `待收款 ${formatCurrency(pending)} · 已到账 ${formatCurrency(paid)}`;
 }
 
 function renderIncomeView() {
@@ -2671,13 +3536,23 @@ function renderIncomeView() {
   const empty = $('#incomeTableEmpty');
   if (!labelEl || !body) return;
 
+  populateIncomeFilterTypeOptions();
+
   const anchor = currentViewDate;
   labelEl.textContent = formatIncomeMonthLabel(anchor);
 
-  const rows = sortIncomesForDisplay(incomesInMonth(anchor));
+  const monthIncomes = incomesInMonth(anchor);
+  const rows = getFilteredIncomesForView(anchor);
+  updateIncomeFilterSubtotals(rows);
+
   if (rows.length === 0) {
     body.innerHTML = '';
-    if (empty) empty.hidden = false;
+    if (empty) {
+      empty.hidden = false;
+      empty.textContent = monthIncomes.length === 0
+        ? '本月暂无收入记录'
+        : '没有符合筛选条件的记录';
+    }
     return;
   }
   if (empty) empty.hidden = true;
@@ -2689,8 +3564,10 @@ function renderIncomeView() {
     const statusTitle = isSocial
       ? '已到账（自媒体平台自动结算）'
       : (isPaid ? '已到账，点击标为待收' : '待收款，点击标为已到账');
-    const typeClass = income.incomeType === INCOME_TYPES.CLIENT ? 'income-type-badge--client' : '';
-    const typeLabel = formatIncomeTypeLabel(income.incomeType);
+    const typeClass = income.incomeType === INCOME_TYPES.CLIENT
+      ? 'income-type-badge--client'
+      : (income.incomeType === INCOME_TYPES.CUSTOM ? 'income-type-badge--custom' : '');
+    const typeLabel = formatIncomeTypeLabel(income);
     const meta = buildIncomeRowMeta(income);
     const name = income.clientName || '—';
 
@@ -2928,17 +3805,36 @@ function initClientModal() {
   });
 }
 
+function populateManualIncomeTypeSelect(selectedValue) {
+  const select = $('#manualIncomeType');
+  if (!select) return;
+  const current = selectedValue || select.value || INCOME_TYPES.CLIENT;
+  const options = [
+    { value: INCOME_TYPES.CLIENT, label: getTypeLabel('client') },
+    { value: INCOME_TYPES.SOCIAL, label: getTypeLabel('social') },
+    ...getCustomEventTypes().map((t) => ({ value: `custom:${t.id}`, label: t.label })),
+  ];
+  select.innerHTML = options
+    .map((o) => `<option value="${o.value}">${escapeHtml(o.label)}</option>`)
+    .join('');
+  select.value = options.some((o) => o.value === current) ? current : INCOME_TYPES.CLIENT;
+}
+
 function updateManualIncomeTypeFields() {
   const type = $('#manualIncomeType')?.value;
   const isClient = type === INCOME_TYPES.CLIENT;
+  const isSocial = type === INCOME_TYPES.SOCIAL;
+  const isCustom = String(type || '').startsWith('custom:');
   const clientFields = $('#manualIncomeClientFields');
   const socialFields = $('#manualIncomeSocialFields');
   const statusGroup = $('#manualIncomeStatusGroup');
   if (clientFields) clientFields.hidden = !isClient;
-  if (socialFields) socialFields.hidden = isClient;
-  if (statusGroup) statusGroup.hidden = !isClient;
-  if (!isClient) {
+  if (socialFields) socialFields.hidden = !(isSocial || isCustom);
+  if (statusGroup) statusGroup.hidden = isSocial;
+  if (isSocial) {
     $('#manualIncomeStatus').value = INCOME_STATUS.PAID;
+  } else if (isCustom && !$('#manualIncomeStatus').value) {
+    $('#manualIncomeStatus').value = INCOME_STATUS.PENDING;
   }
 }
 
@@ -2978,6 +3874,11 @@ function openManualIncomeModal(income = null, options = {}) {
   $('#manualIncomeForm')?.reset();
   $('#manualIncomeId').value = income?.id || '';
   $('#manualIncomeSource').value = income?.source || INCOME_SOURCE.MANUAL;
+  populateManualIncomeTypeSelect(
+    income?.incomeType === INCOME_TYPES.CUSTOM && income.customTypeId
+      ? `custom:${income.customTypeId}`
+      : income?.incomeType,
+  );
 
   if (actualMode === 'auto' && income) {
     setManualIncomeFormMode('auto');
@@ -2986,7 +3887,9 @@ function openManualIncomeModal(income = null, options = {}) {
   } else if (income) {
     setManualIncomeFormMode('edit');
     $('#manualIncomeDate').value = income.date || toDateString(currentViewDate);
-    $('#manualIncomeType').value = income.incomeType;
+    $('#manualIncomeType').value = income.incomeType === INCOME_TYPES.CUSTOM && income.customTypeId
+      ? `custom:${income.customTypeId}`
+      : income.incomeType;
     $('#manualIncomeStatus').value = income.status;
 
     if (income.incomeType === INCOME_TYPES.CLIENT) {
@@ -3040,7 +3943,11 @@ function buildManualIncomePayload() {
     return null;
   }
 
-  const incomeType = $('#manualIncomeType').value;
+  const incomeTypeRaw = $('#manualIncomeType').value;
+  const isCustomManual = String(incomeTypeRaw || '').startsWith('custom:');
+  const incomeType = isCustomManual
+    ? INCOME_TYPES.CUSTOM
+    : incomeTypeRaw;
   const status = incomeType === INCOME_TYPES.SOCIAL
     ? INCOME_STATUS.PAID
     : $('#manualIncomeStatus').value;
@@ -3096,6 +4003,25 @@ function buildManualIncomePayload() {
     return null;
   }
 
+  if (isCustomManual) {
+    const customTypeId = incomeTypeRaw.slice('custom:'.length);
+    if (!findCustomTypeById(customTypeId)) {
+      alert('自定义类型不存在，请重新选择');
+      return null;
+    }
+    return normalizeIncome({
+      id: id || crypto.randomUUID(),
+      scheduleId: null,
+      date,
+      incomeType: INCOME_TYPES.CUSTOM,
+      customTypeId,
+      clientName: projectName,
+      finalPrice,
+      status: status === INCOME_STATUS.PAID ? INCOME_STATUS.PAID : INCOME_STATUS.PENDING,
+      source: INCOME_SOURCE.MANUAL,
+    });
+  }
+
   return normalizeIncome({
     id: id || crypto.randomUUID(),
     scheduleId: null,
@@ -3147,7 +4073,7 @@ function openIncomeEditModal(incomeId) {
   $('#incomeEditStatus').value = income.status;
   $('#incomeEditDurationGroup').hidden = !isClient;
   $('#incomeEditNameLabel').textContent = isClient ? '客户名' : '项目名';
-  $('#incomeEditTypeHint').textContent = `${formatIncomeTypeLabel(income.incomeType)} · ${sourceLabel}`;
+  $('#incomeEditTypeHint').textContent = `${formatIncomeTypeLabel(income)} · ${sourceLabel}`;
   const statusGroup = $('#incomeEditStatusGroup');
   if (statusGroup) statusGroup.hidden = !isClient;
   if (!isClient) {
@@ -3224,6 +4150,7 @@ function saveIncomeEditFromForm(e) {
     scheduleId: existing.scheduleId,
     source: existing.source,
     incomeType: existing.incomeType,
+    customTypeId: existing.customTypeId,
     ratePerMinute: existing.ratePerMinute,
     date,
     clientName,
@@ -3234,7 +4161,7 @@ function saveIncomeEditFromForm(e) {
   });
   appData.incomes[idx] = updated;
   if (existing.status !== INCOME_STATUS.PAID && status === INCOME_STATUS.PAID) {
-    syncScheduleOnClientIncomePaid(updated);
+    syncScheduleOnIncomePaid(updated);
   }
 
   saveData();
@@ -3279,6 +4206,31 @@ function initManualIncomeModal() {
 function initIncomeToolbar() {
   $('#btnClientManage')?.addEventListener('click', openClientModal);
   $('#btnManualIncome')?.addEventListener('click', () => openManualIncomeModal());
+
+  const typeEl = $('#incomeFilterType');
+  const statusEl = $('#incomeFilterStatus');
+  const searchEl = $('#incomeFilterSearch');
+  if (typeEl) {
+    typeEl.value = incomeFilterType;
+    typeEl.addEventListener('change', () => {
+      incomeFilterType = typeEl.value || 'all';
+      renderIncomeView();
+    });
+  }
+  if (statusEl) {
+    statusEl.value = incomeFilterStatus;
+    statusEl.addEventListener('change', () => {
+      incomeFilterStatus = statusEl.value || 'all';
+      renderIncomeView();
+    });
+  }
+  if (searchEl) {
+    searchEl.value = incomeFilterQuery;
+    searchEl.addEventListener('input', () => {
+      incomeFilterQuery = searchEl.value || '';
+      renderIncomeView();
+    });
+  }
 }
 
 function initIncomeView() {
@@ -3312,9 +4264,9 @@ function initIncomeView() {
 
 function renderStats() {
   const monthEvents = eventsInMonth(currentViewDate);
-  const clientMonthEvents = monthEvents.filter((e) => isClientSchedule(e));
-  const completed = clientMonthEvents.filter((e) => isScheduleDelivered(e));
-  const pending = clientMonthEvents.filter((e) => !isScheduleDelivered(e));
+  const trackable = monthEvents.filter((e) => isClientSchedule(e) || isCustomSchedule(e));
+  const completed = trackable.filter((e) => isScheduleDelivered(e));
+  const pending = trackable.filter((e) => !isScheduleDelivered(e));
   const income = getMonthIncomeTotal(currentViewDate);
 
   $('#statMonthIncome').textContent = formatCurrency(income);
@@ -3322,37 +4274,6 @@ function renderStats() {
   $('#statCompleted').textContent = completed.length;
   $('#statPending').textContent = pending.length;
 }
-
-const incomeSliceLabelPlugin = {
-  id: 'incomeSliceLabels',
-  afterDatasetDraw(chart) {
-    const { ctx, data } = chart;
-    const dataset = data.datasets[0];
-    const meta = chart.getDatasetMeta(0);
-    const total = dataset.data.reduce((sum, val) => sum + val, 0);
-    if (!total || data.labels[0] === '暂无收入数据') return;
-
-    meta.data.forEach((arc, index) => {
-      const label = data.labels[index];
-      const value = dataset.data[index];
-      const pct = Math.round((value / total) * 100);
-      const { x, y } = arc.tooltipPosition();
-      const text = `${label} ${pct}%`;
-
-      ctx.save();
-      ctx.font = 'bold 12px -apple-system, BlinkMacSystemFont, sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.lineWidth = 4;
-      const isLightSlice = label === '自媒体';
-      ctx.strokeStyle = isLightSlice ? 'rgba(17, 17, 17, 0.12)' : 'rgba(255, 255, 255, 0.35)';
-      ctx.fillStyle = isLightSlice ? '#111111' : '#FFFFFF';
-      ctx.strokeText(text, x, y);
-      ctx.fillText(text, x, y);
-      ctx.restore();
-    });
-  },
-};
 
 function renderChart() {
   const chartTitle = document.querySelector('.panel--chart .panel__title');
@@ -3369,25 +4290,15 @@ function renderChart() {
     ? `${y} 年 ${m} 月 · 收入统计`
     : `${y} 年 · 收入统计`;
 
-  const { clientTotal, socialTotal } = getIncomeDistributionTotals(periodIncomes);
-  const grandTotal = clientTotal + socialTotal;
+  const slices = getIncomeDistributionSlices(periodIncomes);
+  const grandTotal = slices.reduce((sum, s) => sum + s.total, 0);
+  const hasData = grandTotal > 0 && slices.length > 0;
 
-  const labels = [];
-  const values = [];
-  const colors = [];
+  const labels = slices.map((s) => s.label);
+  const values = slices.map((s) => s.total);
+  const colors = slices.map((s) => s.color);
 
-  if (clientTotal > 0) {
-    labels.push('客户');
-    values.push(clientTotal);
-    colors.push('#d51b4f');
-  }
-  if (socialTotal > 0) {
-    labels.push('自媒体');
-    values.push(socialTotal);
-    colors.push('#E5E5E5');
-  }
-
-  if (labels.length === 0) {
+  if (!hasData) {
     labels.push('暂无收入数据');
     values.push(1);
     colors.push('#e2e8f0');
@@ -3398,7 +4309,6 @@ function renderChart() {
 
   incomeChart = new Chart(ctx, {
     type: 'doughnut',
-    plugins: [incomeSliceLabelPlugin],
     data: {
       labels,
       datasets: [{
@@ -3414,39 +4324,48 @@ function renderChart() {
       cutout: '62%',
       plugins: {
         legend: { display: false },
-        tooltip: { enabled: false },
+        tooltip: {
+          enabled: hasData,
+          displayColors: false,
+          caretSize: 0,
+          caretPadding: 8,
+          cornerRadius: 8,
+          padding: { top: 8, right: 10, bottom: 8, left: 10 },
+          backgroundColor: 'rgba(255, 255, 255, 0.9)',
+          titleColor: '#111111',
+          bodyColor: '#555555',
+          borderColor: 'rgba(0, 0, 0, 0.08)',
+          borderWidth: 1,
+          titleFont: { size: 12, weight: '600' },
+          bodyFont: { size: 12, weight: '500' },
+          callbacks: {
+            title(items) {
+              return items[0]?.label || '';
+            },
+            label(ctx) {
+              const value = Number(ctx.raw) || 0;
+              const total = (ctx.dataset.data || []).reduce((sum, v) => sum + (Number(v) || 0), 0);
+              const pct = total > 0 ? Math.round((value / total) * 100) : 0;
+              return `${formatCurrency(value)}（${pct}%）`;
+            },
+          },
+        },
       },
-      events: [],
     },
   });
 
   const legendEl = $('#chartLegend');
-  if (clientTotal === 0 && socialTotal === 0) {
+  if (grandTotal <= 0 || slices.length === 0) {
     legendEl.innerHTML = '<span class="chart-legend__empty">暂无收入数据</span>';
   } else {
-    const parts = [];
-    if (clientTotal > 0) {
-      const pct = Math.round((clientTotal / grandTotal) * 100);
-      parts.push({
-        text: `客户 ${formatCurrency(clientTotal)} (${pct}%)`,
-        color: '#d51b4f',
-      });
-    }
-    if (socialTotal > 0) {
-      const pct = Math.round((socialTotal / grandTotal) * 100);
-      parts.push({
-        text: `自媒体 ${formatCurrency(socialTotal)} (${pct}%)`,
-        color: '#E5E5E5',
-      });
-    }
-    legendEl.innerHTML = parts
-      .map(
-        (item) =>
-          `<span class="chart-legend__item">
+    legendEl.innerHTML = slices
+      .map((item) => {
+        const pct = Math.round((item.total / grandTotal) * 100);
+        return `<span class="chart-legend__item">
             <span class="chart-legend__dot" style="background:${item.color}"></span>
-            ${item.text}
-          </span>`
-      )
+            ${item.label} ${formatCurrency(item.total)} (${pct}%)
+          </span>`;
+      })
       .join('');
   }
 }
@@ -3635,7 +4554,6 @@ function initViewToggle() {
   const incomeView = $('#incomeView');
   const calendarContainer = document.querySelector('.calendar-container');
   const quickAddPanel = $('#quickAddPanel');
-  const incomeDeliveryPanel = $('#incomeDeliveryPanel');
 
   function setToggleActive(isMonth) {
     monthBtn?.classList.toggle('view-toggle__btn--active', isMonth);
@@ -3648,13 +4566,13 @@ function initViewToggle() {
     calendarWrap.hidden = false;
     incomeView.hidden = true;
     if (quickAddPanel) quickAddPanel.hidden = false;
-    if (incomeDeliveryPanel) incomeDeliveryPanel.hidden = true;
     if (monthViewToggle) monthViewToggle.hidden = false;
     calendarContainer?.classList.remove('calendar-container--income');
     setToggleActive(true);
     requestAnimationFrame(() => {
       refreshMonthViewCalendar();
       syncMainViewHeightNow();
+      requestAnimationFrame(resizeSidebarCharts);
     });
   }
 
@@ -3672,10 +4590,13 @@ function initViewToggle() {
     calendarWrap.hidden = true;
     incomeView.hidden = false;
     if (quickAddPanel) quickAddPanel.hidden = true;
-    if (incomeDeliveryPanel) incomeDeliveryPanel.hidden = false;
     if (monthViewToggle) monthViewToggle.hidden = true;
     calendarContainer?.classList.add('calendar-container--income');
     setToggleActive(false);
+    requestAnimationFrame(() => {
+      syncMainViewHeightNow();
+      requestAnimationFrame(resizeSidebarCharts);
+    });
   }
 
   syncMainViewHeight = syncMainViewHeightNow;
@@ -3796,11 +4717,327 @@ function seedDemoData() {
   saveData();
 }
 
+function getSelectedTimeBillingSchemeFromForm() {
+  if ($('#settingsBillingCustom')?.checked) return TIME_BILLING_SCHEMES.REMAINDER_TIERS;
+  return TIME_BILLING_SCHEMES.REMAINDER_LADDER;
+}
+
+function syncSettingsTimeBillingEnabledVisibility() {
+  const enabled = Boolean($('#settingsTimeBillingEnabled')?.checked);
+  const details = $('#settingsTimeBillingDetails');
+  if (details) details.hidden = !enabled;
+  if (enabled) syncSettingsTimeBillingSchemeVisibility();
+}
+
+function syncSettingsTimeBillingSchemeVisibility() {
+  const scheme = getSelectedTimeBillingSchemeFromForm();
+  const tiers = $('#settingsTimeBillingTierFields');
+  if (tiers) tiers.hidden = scheme !== TIME_BILLING_SCHEMES.REMAINDER_TIERS;
+}
+
+function fillSettingsTimeBillingForm(
+  rule = getSettings().timeBilling,
+  enabled = isTimeBillingEnabled(),
+) {
+  const enabledEl = $('#settingsTimeBillingEnabled');
+  if (enabledEl) enabledEl.checked = Boolean(enabled);
+
+  const scheme = rule.scheme === TIME_BILLING_SCHEMES.REMAINDER_TIERS
+    ? TIME_BILLING_SCHEMES.REMAINDER_TIERS
+    : TIME_BILLING_SCHEMES.REMAINDER_LADDER;
+  const defaultRadio = $('#settingsBillingDefault');
+  const customRadio = $('#settingsBillingCustom');
+  if (defaultRadio && customRadio) {
+    defaultRadio.checked = scheme === TIME_BILLING_SCHEMES.REMAINDER_LADDER;
+    customRadio.checked = scheme === TIME_BILLING_SCHEMES.REMAINDER_TIERS;
+  }
+
+  const t1Over = $('#settingsBillingTier1Over');
+  const t2Over = $('#settingsBillingTier2Over');
+  if (t1Over) t1Over.value = String(rule.tier1OverSeconds ?? 10);
+  if (t2Over) t2Over.value = String(rule.tier2OverSeconds ?? 30);
+
+  syncSettingsTimeBillingEnabledVisibility();
+}
+
+function readTimeBillingFromForm() {
+  const timeBillingEnabled = Boolean($('#settingsTimeBillingEnabled')?.checked);
+  const scheme = getSelectedTimeBillingSchemeFromForm();
+  const base = { ...DEFAULT_SETTINGS.timeBilling, scheme };
+
+  if (!timeBillingEnabled || scheme === TIME_BILLING_SCHEMES.REMAINDER_LADDER) {
+    return {
+      ok: true,
+      timeBillingEnabled,
+      timeBilling: normalizeTimeBilling(
+        timeBillingEnabled ? base : getSettings().timeBilling,
+      ),
+    };
+  }
+
+  const tier1OverSeconds = Number($('#settingsBillingTier1Over')?.value);
+  const tier2OverSeconds = Number($('#settingsBillingTier2Over')?.value);
+  if (!Number.isFinite(tier1OverSeconds) || tier1OverSeconds < 1 || tier1OverSeconds > 58) {
+    return { ok: false, error: '请填写第一档「满多少秒」（1–58）' };
+  }
+  if (!Number.isFinite(tier2OverSeconds) || tier2OverSeconds < 2 || tier2OverSeconds > 59) {
+    return { ok: false, error: '请填写第二档「满多少秒」（2–59）' };
+  }
+  if (tier2OverSeconds <= tier1OverSeconds) {
+    return { ok: false, error: '第二档秒数必须大于第一档' };
+  }
+
+  return {
+    ok: true,
+    timeBillingEnabled,
+    timeBilling: normalizeTimeBilling({
+      ...base,
+      tier1OverSeconds: Math.floor(tier1OverSeconds),
+      tier2OverSeconds: Math.floor(tier2OverSeconds),
+    }),
+  };
+}
+
+let settingsCustomTypesDraft = [];
+
+function isCustomTypeInUse(typeId) {
+  if (!typeId) return false;
+  const usedByEvent = appData.events.some((e) => e.type === typeId);
+  const usedByIncome = appData.incomes.some(
+    (i) => i.incomeType === INCOME_TYPES.CUSTOM && i.customTypeId === typeId,
+  );
+  return usedByEvent || usedByIncome;
+}
+
+function renderSettingsCustomTypesList() {
+  const list = $('#settingsCustomTypesList');
+  const hint = $('#settingsCustomTypesHint');
+  if (!list) return;
+
+  if (settingsCustomTypesDraft.length === 0) {
+    list.innerHTML = '';
+    if (hint) {
+      hint.hidden = false;
+      hint.textContent = '尚未添加自定义类型';
+    }
+    return;
+  }
+  if (hint) hint.hidden = true;
+
+  list.innerHTML = settingsCustomTypesDraft.map((t, index) => `
+    <div class="settings-custom-type-row" data-custom-type-id="${t.id}">
+      <input
+        type="text"
+        class="settings-custom-type-row__name"
+        value="${escapeHtml(t.label)}"
+        maxlength="20"
+        aria-label="类型名称"
+        data-custom-type-name
+      >
+      <input type="color" class="settings-color" value="${t.color}" aria-label="类型颜色" data-custom-type-color>
+      <span class="settings-color-hex">${t.color}</span>
+      <button type="button" class="btn btn--ghost settings-custom-type-row__delete" data-custom-type-delete="${t.id}" title="删除" aria-label="删除">−</button>
+      <span class="settings-locked">未完成 / ✅已完成</span>
+    </div>
+  `).join('');
+}
+
+function syncCustomTypesDraftFromDom() {
+  const list = $('#settingsCustomTypesList');
+  if (!list) return settingsCustomTypesDraft;
+  settingsCustomTypesDraft = [...list.querySelectorAll('[data-custom-type-id]')].map((row, index) => {
+    const id = row.dataset.customTypeId;
+    const label = row.querySelector('[data-custom-type-name]')?.value;
+    const color = row.querySelector('[data-custom-type-color]')?.value;
+    return normalizeCustomEventType({ id, label, color }, index);
+  });
+  return settingsCustomTypesDraft;
+}
+
+function addCustomTypeToDraft() {
+  syncCustomTypesDraftFromDom();
+  if (2 + settingsCustomTypesDraft.length >= MAX_EVENT_TYPES) {
+    alert(`最多 ${MAX_EVENT_TYPES} 个事件类型（含客户剪辑、自媒体）`);
+    return;
+  }
+  const index = settingsCustomTypesDraft.length;
+  settingsCustomTypesDraft.push(normalizeCustomEventType({
+    id: crypto.randomUUID(),
+    label: `新类型${index + 1}`,
+    color: CUSTOM_TYPE_COLORS[index % CUSTOM_TYPE_COLORS.length],
+  }, index));
+  renderSettingsCustomTypesList();
+}
+
+function removeCustomTypeFromDraft(typeId) {
+  if (isCustomTypeInUse(typeId)) {
+    alert('该类型已有关联档期或收入，请先删除或改类型后再删此类型');
+    return;
+  }
+  syncCustomTypesDraftFromDom();
+  settingsCustomTypesDraft = settingsCustomTypesDraft.filter((t) => t.id !== typeId);
+  renderSettingsCustomTypesList();
+}
+
+function fillSettingsForm() {
+  const s = getSettings();
+  const accentEl = $('#settingsAccent');
+  const clientEl = $('#settingsClientColor');
+  const socialEl = $('#settingsSocialColor');
+  if (accentEl) accentEl.value = s.accent;
+  if (clientEl) clientEl.value = s.eventTypes.client.color;
+  if (socialEl) socialEl.value = s.eventTypes.social.color;
+  const accentHex = $('#settingsAccentHex');
+  const clientHex = $('#settingsClientColorHex');
+  const socialHex = $('#settingsSocialColorHex');
+  if (accentHex) accentHex.textContent = s.accent;
+  if (clientHex) clientHex.textContent = s.eventTypes.client.color;
+  if (socialHex) socialHex.textContent = s.eventTypes.social.color;
+  fillSettingsTimeBillingForm(s.timeBilling, s.timeBillingEnabled);
+  settingsCustomTypesDraft = normalizeCustomEventTypes(s.customEventTypes);
+  renderSettingsCustomTypesList();
+}
+
+function syncSettingsColorLabels() {
+  const accentEl = $('#settingsAccent');
+  const clientEl = $('#settingsClientColor');
+  const socialEl = $('#settingsSocialColor');
+  const accentHex = $('#settingsAccentHex');
+  const clientHex = $('#settingsClientColorHex');
+  const socialHex = $('#settingsSocialColorHex');
+  if (accentEl && accentHex) accentHex.textContent = accentEl.value;
+  if (clientEl && clientHex) clientHex.textContent = clientEl.value;
+  if (socialEl && socialHex) socialHex.textContent = socialEl.value;
+}
+
+function showSettingsPanel(panelId) {
+  const id = panelId || 'theme';
+  $$('#settingsNav [data-settings-panel]').forEach((btn) => {
+    const active = btn.dataset.settingsPanel === id;
+    btn.classList.toggle('settings-nav__item--active', active);
+    btn.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+  $$('.settings-panel[data-settings-panel]').forEach((panel) => {
+    panel.hidden = panel.dataset.settingsPanel !== id;
+  });
+}
+
+function openSettingsModal() {
+  fillSettingsForm();
+  showSettingsPanel('theme');
+  $('#settingsModal')?.showModal();
+}
+
+function closeSettingsModal() {
+  $('#settingsModal')?.close();
+}
+
+function saveSettingsFromForm() {
+  const accent = normalizeHexColor($('#settingsAccent')?.value, DEFAULT_SETTINGS.accent);
+  const clientColor = normalizeHexColor(
+    $('#settingsClientColor')?.value,
+    DEFAULT_SETTINGS.eventTypes.client.color,
+  );
+  const socialColor = normalizeHexColor(
+    $('#settingsSocialColor')?.value,
+    DEFAULT_SETTINGS.eventTypes.social.color,
+  );
+  const billingResult = readTimeBillingFromForm();
+  if (!billingResult.ok) {
+    alert(billingResult.error);
+    return;
+  }
+
+  const customEventTypes = syncCustomTypesDraftFromDom();
+  const emptyName = customEventTypes.find((t) => !String(t.label || '').trim());
+  if (emptyName) {
+    alert('自定义类型名称不能为空');
+    return;
+  }
+
+  appData.settings = normalizeSettings({
+    accent,
+    timeBillingEnabled: billingResult.timeBillingEnabled,
+    timeBilling: billingResult.timeBilling,
+    eventTypes: {
+      client: { label: '客户剪辑', color: clientColor },
+      social: { label: '自媒体', color: socialColor },
+    },
+    customEventTypes,
+  });
+  saveData();
+  applyThemeFromSettings();
+  populateTypeSelect();
+  populateIncomeFilterTypeOptions();
+  populateManualIncomeTypeSelect();
+  renderChart();
+  if (calendar) calendar.refetchEvents();
+  const archiveOpen = $('#incomeArchiveModal')?.open;
+  if (archiveOpen) renderIncomeArchive();
+  closeSettingsModal();
+}
+
+function initSettingsModal() {
+  $('#btnOpenSettings')?.addEventListener('click', openSettingsModal);
+  $('#btnCloseSettings')?.addEventListener('click', closeSettingsModal);
+  $('#btnCancelSettings')?.addEventListener('click', closeSettingsModal);
+  $('#settingsNav')?.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-settings-panel]');
+    if (!btn) return;
+    showSettingsPanel(btn.dataset.settingsPanel);
+  });
+  $('#btnResetSettings')?.addEventListener('click', () => {
+    const d = DEFAULT_SETTINGS;
+    const accentEl = $('#settingsAccent');
+    const clientEl = $('#settingsClientColor');
+    const socialEl = $('#settingsSocialColor');
+    if (accentEl) accentEl.value = d.accent;
+    if (clientEl) clientEl.value = d.eventTypes.client.color;
+    if (socialEl) socialEl.value = d.eventTypes.social.color;
+    fillSettingsTimeBillingForm(d.timeBilling, d.timeBillingEnabled);
+    settingsCustomTypesDraft = [];
+    renderSettingsCustomTypesList();
+    syncSettingsColorLabels();
+  });
+  ['settingsAccent', 'settingsClientColor', 'settingsSocialColor'].forEach((id) => {
+    $(`#${id}`)?.addEventListener('input', syncSettingsColorLabels);
+  });
+  $('#settingsTimeBillingEnabled')?.addEventListener('change', syncSettingsTimeBillingEnabledVisibility);
+  ['settingsBillingDefault', 'settingsBillingCustom'].forEach((id) => {
+    $(`#${id}`)?.addEventListener('change', syncSettingsTimeBillingSchemeVisibility);
+  });
+  $('#btnAddCustomType')?.addEventListener('click', addCustomTypeToDraft);
+  $('#settingsCustomTypesList')?.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-custom-type-delete]');
+    if (!btn) return;
+    removeCustomTypeFromDraft(btn.dataset.customTypeDelete);
+  });
+  $('#settingsCustomTypesList')?.addEventListener('input', (e) => {
+    const colorInput = e.target.closest('[data-custom-type-color]');
+    if (colorInput) {
+      const hex = colorInput.parentElement?.querySelector('.settings-color-hex');
+      if (hex) hex.textContent = colorInput.value;
+    }
+  });
+  $('#settingsForm')?.addEventListener('submit', (e) => {
+    e.preventDefault();
+    saveSettingsFromForm();
+  });
+  $('#settingsModal')?.addEventListener('cancel', (e) => {
+    e.preventDefault();
+    closeSettingsModal();
+  });
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   populateTypeSelect();
   populateStatusSelect('自媒体', '剪辑');
   updateEventFormForType('自媒体');
+  populateManualIncomeTypeSelect();
+  populateIncomeFilterTypeOptions();
   seedDemoData();
+  applyThemeFromSettings();
+  initSettingsModal();
   initCalendar();
   initViewToggle();
   initIncomeView();
@@ -3811,8 +5048,6 @@ document.addEventListener('DOMContentLoaded', () => {
   initIncomePeriodToggle();
   initIncomeArchiveModal();
   initProfile();
-  initDeliveryPickModal();
-  initDeliveryConfirmation();
   refreshUI();
 
   updateQuickAddDateHint();

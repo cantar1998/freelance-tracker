@@ -28,6 +28,7 @@
       </div>
     </div>
     <div class="header__user">
+      <button type="button" class="header__settings-btn" id="btnOpenSettings" aria-label="设置" title="设置">⚙️</button>
       <button type="button" class="header__user-avatar" id="btnAvatar" aria-label="更换头像">
         <img id="userAvatarImg" class="header__user-avatar-img" alt="" hidden>
         <span id="userAvatarInitial" class="header__user-avatar-initial">创</span>
@@ -68,26 +69,11 @@
       <div class="quick-add" id="quickAddPanel">
         <label class="quick-add__label" for="quickAddInput">快速添加档期</label>
         <div class="quick-add__row">
-          <input type="text" id="quickAddInput" placeholder="客户：ID+日期/自媒体：项目+日期+状态">
+          <input type="text" id="quickAddInput" placeholder="客户名+日期 / 自媒体+项目+日期+状态 / 自定义类型名+项目+日期">
           <button type="button" class="btn btn--primary" id="btnQuickAdd">添加到日历</button>
         </div>
         <p class="quick-add__hint" id="quickAddDateHint">将添加到：今天</p>
       </div>
-
-      <section class="income-delivery" id="incomeDeliveryPanel" hidden>
-        <label class="income-delivery__label" for="deliveryConfirmInput">交付确认</label>
-        <div class="income-delivery__row">
-          <input
-            type="text"
-            id="deliveryConfirmInput"
-            class="income-delivery__input"
-            placeholder="客户ID+时长（日期可选）"
-            autocomplete="off"
-          >
-          <button type="button" class="btn btn--primary" id="btnDeliveryConfirm">确认</button>
-        </div>
-        <p class="income-delivery__hint" id="deliveryConfirmFeedback">仅匹配审核中的客户档期</p>
-      </section>
 
       <div class="calendar-container">
         <div class="view-toggle" id="viewToggle">
@@ -111,6 +97,44 @@
               </div>
             </div>
 
+            <div class="income-view__filters" id="incomeFilterBar">
+              <div class="income-view__filter-controls">
+                <label class="income-view__filter-field">
+                  <span class="sr-only">事件类型</span>
+                  <select id="incomeFilterType" class="income-view__select">
+                    <option value="all">全部类型</option>
+                    <option value="client">客户剪辑</option>
+                    <option value="social">自媒体</option>
+                  </select>
+                </label>
+                <label class="income-view__filter-field">
+                  <span class="sr-only">到账状态</span>
+                  <select id="incomeFilterStatus" class="income-view__select">
+                    <option value="all">全部状态</option>
+                    <option value="pending">待收款</option>
+                    <option value="paid">已到账</option>
+                  </select>
+                </label>
+                <label class="income-view__filter-field income-view__filter-field--search">
+                  <span class="sr-only">搜索名称</span>
+                  <input
+                    type="search"
+                    id="incomeFilterSearch"
+                    class="income-view__search"
+                    placeholder="搜索客户/项目名"
+                    autocomplete="off"
+                  >
+                </label>
+              </div>
+              <div class="income-view__filter-meta">
+                <p class="income-view__subtotals" id="incomeFilterSubtotals">待收款 ¥0 · 已到账 ¥0</p>
+                <div class="income-view__filter-actions">
+                  <button type="button" class="btn btn--ghost income-toolbar__btn" id="btnManualIncome">手动补录</button>
+                  <button type="button" class="btn btn--ghost income-toolbar__btn" id="btnClientManage">客户管理</button>
+                </div>
+              </div>
+            </div>
+
             <div class="income-table-wrap">
               <table class="income-table">
                 <thead>
@@ -127,11 +151,6 @@
               </table>
               <p class="income-table__empty" id="incomeTableEmpty" hidden>本月暂无收入记录</p>
             </div>
-
-            <footer class="income-view__footer" id="incomePanelFooter">
-              <button type="button" class="btn btn--ghost income-toolbar__btn" id="btnManualIncome">手动补录</button>
-              <button type="button" class="btn btn--ghost income-toolbar__btn" id="btnClientManage">客户管理</button>
-            </footer>
           </div>
         </div>
       </div>
@@ -161,7 +180,7 @@
   </main>
 
   <footer class="page-footer">
-    <p class="page-footer__text">© 2026 cantar · 晃晃 v1.0 · All rights reserved.</p>
+    <p class="page-footer__text">© 2026 cantar · 晃晃 v2.0 · All rights reserved.</p>
   </footer>
 
   <dialog class="modal" id="eventModal">
@@ -203,6 +222,23 @@
           <input type="date" id="eventDate" required>
         </div>
 
+        <div class="form-group event-form__full" id="eventDurationGroup" hidden>
+          <label for="eventDurationMin">成片时长</label>
+          <div class="event-form__duration-row">
+            <input type="number" id="eventDurationMin" min="0" step="1" placeholder="分" inputmode="numeric">
+            <span class="event-form__duration-unit">分</span>
+            <input type="number" id="eventDurationSec" min="0" max="59" step="1" placeholder="秒" inputmode="numeric">
+            <span class="event-form__duration-unit">秒</span>
+          </div>
+          <p class="event-form__hint">状态为「审核中」时填写并保存，将生成待收款明细</p>
+        </div>
+
+        <div class="form-group event-form__full" id="eventClientAmountGroup" hidden>
+          <label for="eventClientFlatAmount">金额（元）</label>
+          <input type="number" id="eventClientFlatAmount" min="0" step="0.01" placeholder="例：1500">
+          <p class="event-form__hint">填写金额并保存后进入待收款；在收入里标为已到账后计入收入，档期变为已交付</p>
+        </div>
+
         <div class="form-group event-form__full" id="eventSocialAmountGroup" hidden>
           <label for="eventSocialAmount">一口价金额（元）</label>
           <input type="number" id="eventSocialAmount" min="0" step="0.01" placeholder="例：1500">
@@ -228,22 +264,6 @@
         </div>
       </div>
     </form>
-  </dialog>
-
-  <dialog class="modal" id="deliveryPickModal">
-    <div class="modal__form">
-      <div class="modal__header">
-        <h2 class="modal__title">选择档期</h2>
-        <button type="button" class="modal__close" id="btnCloseDeliveryPick" aria-label="关闭">&times;</button>
-      </div>
-      <p class="delivery-pick__hint">匹配到多条可关联档期，请选择要确认的条目：</p>
-      <div class="delivery-pick__list" id="deliveryPickList"></div>
-      <div class="modal__actions">
-        <div class="modal__actions-right">
-          <button type="button" class="btn btn--ghost" id="btnCancelDeliveryPick">取消</button>
-        </div>
-      </div>
-    </div>
   </dialog>
 
   <dialog class="modal" id="clientModal">
@@ -315,7 +335,7 @@
         </section>
       </div>
 
-      <p class="income-archive__footnote">统计口径：已到账收入（客户：仅 paid，自媒体：创建即计入）</p>
+      <p class="income-archive__footnote">统计口径：仅已到账。客户 / 自定义需在收入里标为已到账；自媒体填金额保存即已到账。</p>
     </div>
   </dialog>
 
@@ -441,6 +461,162 @@
       <div class="modal__actions">
         <div class="modal__actions-right">
           <button type="button" class="btn btn--ghost" id="btnCancelIncomeEdit">取消</button>
+          <button type="submit" class="btn btn--primary">保存</button>
+        </div>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="modal modal--settings" id="settingsModal">
+    <form class="modal__form settings-form" id="settingsForm">
+      <div class="modal__header">
+        <h2 class="modal__title">⚙️ 设置</h2>
+        <button type="button" class="modal__close" id="btnCloseSettings" aria-label="关闭">&times;</button>
+      </div>
+
+      <div class="settings-shell">
+        <nav class="settings-nav" id="settingsNav" aria-label="设置分类">
+          <button type="button" class="settings-nav__item settings-nav__item--active" data-settings-panel="theme" aria-selected="true">主题</button>
+          <button type="button" class="settings-nav__item" data-settings-panel="types" aria-selected="false">档期类型管理</button>
+          <button type="button" class="settings-nav__item" data-settings-panel="billing" aria-selected="false">计费模式</button>
+        </nav>
+
+        <div class="settings-panels">
+          <section class="settings-panel" id="settingsPanelTheme" data-settings-panel="theme">
+            <h3 class="settings-panel__title">主题</h3>
+            <p class="settings-section__hint">调整按钮与强调色，不影响事件类型颜色。</p>
+            <div class="settings-row">
+              <label class="settings-row__label" for="settingsAccent">按钮主色（Accent）</label>
+              <div class="settings-row__control">
+                <input type="color" id="settingsAccent" class="settings-color" value="#d51b4f">
+                <span class="settings-color-hex" id="settingsAccentHex">#d51b4f</span>
+              </div>
+            </div>
+          </section>
+
+          <section class="settings-panel" id="settingsPanelTypes" data-settings-panel="types" hidden>
+            <h3 class="settings-panel__title">档期类型管理</h3>
+            <p class="settings-section__hint">
+              预置不可改名，可换色。自定义可改名、换色；状态为未完成 / 已完成。最多 10 个（含预置）。
+            </p>
+
+            <div class="settings-card">
+              <h4 class="settings-subsection__title">预置类型</h4>
+              <div class="settings-row">
+                <label class="settings-row__label" for="settingsClientColor">客户剪辑</label>
+                <div class="settings-row__control">
+                  <input type="color" id="settingsClientColor" class="settings-color" value="#000000">
+                  <span class="settings-color-hex" id="settingsClientColorHex">#000000</span>
+                </div>
+              </div>
+              <div class="settings-row">
+                <label class="settings-row__label" for="settingsSocialColor">自媒体</label>
+                <div class="settings-row__control">
+                  <input type="color" id="settingsSocialColor" class="settings-color" value="#d51b4f">
+                  <span class="settings-color-hex" id="settingsSocialColorHex">#d51b4f</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="settings-card settings-custom-types">
+              <div class="settings-custom-types__header">
+                <h4 class="settings-subsection__title">自定义类型</h4>
+                <button type="button" class="btn btn--ghost income-toolbar__btn" id="btnAddCustomType">＋ 新增</button>
+              </div>
+              <p class="settings-section__hint" id="settingsCustomTypesHint">尚未添加自定义类型</p>
+              <div id="settingsCustomTypesList" class="settings-custom-types__list"></div>
+            </div>
+          </section>
+
+          <section class="settings-panel" id="settingsPanelBilling" data-settings-panel="billing" hidden>
+            <h3 class="settings-panel__title">计费模式</h3>
+            <div class="settings-billing-overview">
+              <div class="settings-billing-overview__block">
+                <h4 class="settings-billing-overview__title">自媒体</h4>
+                <ul class="settings-billing-overview__list">
+                  <li>固定按金额（可选）入账</li>
+                  <li>任一状态填金额并保存后即记为已到账</li>
+                  <li>同项目同月其它状态不必再填（字段会提示已归档）</li>
+                </ul>
+              </div>
+              <div class="settings-billing-overview__block">
+                <h4 class="settings-billing-overview__title">自定义档期</h4>
+                <ul class="settings-billing-overview__list">
+                  <li>固定按金额（可选）入账：填了才生成待收款</li>
+                  <li>收入里点「已到账」后，档期变更为「已完成」</li>
+                  <li>不受按时开关影响</li>
+                </ul>
+              </div>
+              <div class="settings-billing-overview__block">
+                <h4 class="settings-billing-overview__title">客户剪辑</h4>
+                <ul class="settings-billing-overview__list">
+                  <li>默认按金额入账：填金额 → 待收款 → 收入里点「已到账」后档期变更为「已交付」</li>
+                  <li>需要按成片时长计费时，打开下方开关</li>
+                </ul>
+              </div>
+            </div>
+            <label class="settings-switch">
+              <input type="checkbox" id="settingsTimeBillingEnabled">
+              <span class="settings-switch__text">
+                <span class="settings-switch__title">启用按时计费</span>
+                <span class="settings-switch__desc">打开后，客户档期改为填写成片时长（不填金额），并按规则算钱。</span>
+              </span>
+            </label>
+
+            <div id="settingsTimeBillingDetails" class="settings-time-billing-details" hidden>
+              <h4 class="settings-subsection__title settings-subsection__title--with-help">
+                <span class="settings-help" tabindex="0" aria-describedby="settingsBillingHelpTip">
+                  <span class="settings-help-tip" aria-hidden="true">?</span>
+                  <span class="settings-help__popup" id="settingsBillingHelpTip" role="tooltip">
+                    先按整分钟算，剩下不够 1 分钟的部分再进位。目前只支持这种简单算法；<br>
+                    包月、特殊客户或临时优惠等，请到收入明细里手动改金额。更改只影响之后新生成的按时收入。
+                  </span>
+                </span>
+                按时怎么算钱
+              </h4>
+              <div class="settings-billing-options" role="radiogroup" aria-label="按时进位方式">
+                <label class="settings-billing-card">
+                  <input type="radio" name="settingsTimeBillingScheme" value="remainder_ladder" id="settingsBillingDefault" checked>
+                  <span class="settings-billing-card__body">
+                    <span class="settings-billing-card__title">推荐（默认）</span>
+                    <span class="settings-billing-card__desc">
+                      不到 30 秒算半分钟，超过 30 秒算 1 分钟。<br>
+                      例如：35 秒 → 1 分钟；1 分 21 秒 → 1.5 分钟；1 分 31 秒 → 2 分钟。
+                    </span>
+                  </span>
+                </label>
+                <label class="settings-billing-card">
+                  <input type="radio" name="settingsTimeBillingScheme" value="remainder_tiers" id="settingsBillingCustom">
+                  <span class="settings-billing-card__body">
+                    <span class="settings-billing-card__title">自定义进位</span>
+                    <span class="settings-billing-card__desc">自己设定：满多少秒算半分钟、满多少秒算 1 分钟。</span>
+                  </span>
+                </label>
+              </div>
+              <div class="settings-row settings-row--stack" id="settingsTimeBillingTierFields" hidden>
+                <div class="settings-billing-custom settings-billing-custom--stack">
+                  <label class="settings-billing-custom__field">
+                    <span>满</span>
+                    <input type="number" id="settingsBillingTier1Over" min="1" max="59" step="1" value="10">
+                    <span>秒 → 算 0.5 分钟</span>
+                  </label>
+                  <label class="settings-billing-custom__field">
+                    <span>满</span>
+                    <input type="number" id="settingsBillingTier2Over" min="1" max="59" step="1" value="30">
+                    <span>秒 → 算 1 分钟</span>
+                  </label>
+                </div>
+                <p class="settings-section__hint">两档都未满时，这零头不计时（整分钟照加）。第二档秒数须大于第一档。</p>
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+
+      <div class="modal__actions">
+        <button type="button" class="btn btn--ghost" id="btnResetSettings">恢复默认</button>
+        <div class="modal__actions-right">
+          <button type="button" class="btn btn--ghost" id="btnCancelSettings">取消</button>
           <button type="submit" class="btn btn--primary">保存</button>
         </div>
       </div>
