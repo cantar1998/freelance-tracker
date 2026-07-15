@@ -296,16 +296,28 @@ function isTimeBillingEnabled() {
   return Boolean(getSettings().timeBillingEnabled);
 }
 
-/** 客户：全局开关决定按时/按金额；自媒体固定按金额 */
+/** 客户：全局关闭按时 → 一律金额；开启后看本档 clientBillingMode（默认按时） */
 function getScheduleBillingMode(schedule) {
   if (!schedule) {
     return isTimeBillingEnabled() ? CLIENT_BILLING.TIME : CLIENT_BILLING.FLAT;
   }
   const incomeType = schedule.incomeType || eventTypeToIncomeType(schedule.type);
-  if (incomeType === INCOME_TYPES.SOCIAL || schedule.type === '自媒体') {
+  if (
+    incomeType === INCOME_TYPES.SOCIAL
+    || schedule.type === '自媒体'
+    || incomeType === INCOME_TYPES.CUSTOM
+    || isCustomEventType(schedule.type)
+  ) {
     return CLIENT_BILLING.FLAT;
   }
-  return isTimeBillingEnabled() ? CLIENT_BILLING.TIME : CLIENT_BILLING.FLAT;
+  if (!isTimeBillingEnabled()) return CLIENT_BILLING.FLAT;
+  if (schedule.clientBillingMode === CLIENT_BILLING.FLAT) return CLIENT_BILLING.FLAT;
+  if (schedule.clientBillingMode === CLIENT_BILLING.TIME) return CLIENT_BILLING.TIME;
+  // 旧数据：有金额无时长 → 当作一口价
+  const hasFlat = schedule.clientFlatAmount != null && Number(schedule.clientFlatAmount) > 0;
+  const hasDuration = Number(schedule.durationSeconds) > 0;
+  if (hasFlat && !hasDuration) return CLIENT_BILLING.FLAT;
+  return CLIENT_BILLING.TIME;
 }
 
 /** loadData 过程中临时挂载，供 normalizeEvent 识别自定义类型 */
@@ -800,6 +812,13 @@ function normalizeEvent(evt) {
     ).trim(),
     durationSeconds: isClient && evt.durationSeconds != null ? Number(evt.durationSeconds) : null,
     clientFlatAmount,
+    clientBillingMode: isClient
+      ? (
+        evt.clientBillingMode === CLIENT_BILLING.FLAT || evt.clientBillingMode === CLIENT_BILLING.TIME
+          ? evt.clientBillingMode
+          : null
+      )
+      : null,
     incomeType,
     socialProject: isSocial ? String(evt.socialProject || evt.projectName || '').trim() : null,
     socialAmount,
@@ -3138,32 +3157,103 @@ function fillDurationFields(durationSeconds) {
   secEl.value = String(Math.floor(total % 60));
 }
 
+let eventFormClientBillingDraft = CLIENT_BILLING.FLAT;
+
+function resolveClientFormBillingDraft(data = {}) {
+  if (!isTimeBillingEnabled()) return CLIENT_BILLING.FLAT;
+  if (data.clientBillingMode === CLIENT_BILLING.FLAT || data.clientBillingMode === CLIENT_BILLING.TIME) {
+    return data.clientBillingMode;
+  }
+  return getScheduleBillingMode({
+    type: '客户',
+    incomeType: INCOME_TYPES.CLIENT,
+    clientBillingMode: data.clientBillingMode,
+    clientFlatAmount: data.clientFlatAmount,
+    durationSeconds: data.durationSeconds,
+  });
+}
+
+function syncEventClientBillingUI() {
+  const formType = $('#eventType')?.value;
+  const isClient = formType === '客户';
+  const isCustom = isCustomEventType(formType);
+  const toggleGroup = $('#eventClientBillingToggleGroup');
+  const durationGroup = $('#eventDurationGroup');
+  const clientAmountGroup = $('#eventClientAmountGroup');
+  const switchBtn = $('#btnEventClientBillingSwitch');
+  const billingHint = $('#eventClientBillingHint');
+  const amountLabel = $('#eventClientFlatAmountLabel');
+  const amountHint = $('#eventClientAmountGroup .event-form__hint');
+
+  if (!isClient) {
+    if (toggleGroup) toggleGroup.hidden = true;
+    if (durationGroup) durationGroup.hidden = true;
+    if (clientAmountGroup) clientAmountGroup.hidden = !isCustom;
+    if (amountLabel) amountLabel.textContent = '金额（元）';
+    if (amountHint) {
+      amountHint.textContent = isCustom
+        ? '可选：填写后保存将生成待收款明细；到账后档期变为已完成'
+        : '填写金额并保存后进入待收款；在收入里标为已到账后计入收入，档期变为已交付';
+    }
+    return;
+  }
+
+  const timeEnabled = isTimeBillingEnabled();
+  if (!timeEnabled) {
+    eventFormClientBillingDraft = CLIENT_BILLING.FLAT;
+    if (toggleGroup) toggleGroup.hidden = true;
+    if (durationGroup) durationGroup.hidden = true;
+    if (clientAmountGroup) clientAmountGroup.hidden = false;
+    if (amountLabel) amountLabel.textContent = '金额（元）';
+    if (amountHint) {
+      amountHint.textContent = '填写金额并保存后进入待收款；在收入里标为已到账后计入收入，档期变为已交付';
+    }
+    return;
+  }
+
+  if (toggleGroup) toggleGroup.hidden = false;
+  const useTime = eventFormClientBillingDraft === CLIENT_BILLING.TIME;
+  if (durationGroup) durationGroup.hidden = !useTime;
+  if (clientAmountGroup) clientAmountGroup.hidden = useTime;
+  if (switchBtn) switchBtn.textContent = useTime ? '改为一口价' : '改回按时';
+  if (billingHint) {
+    billingHint.textContent = useTime
+      ? '当前：按时计费（成片时长）'
+      : '当前：一口价（本档单独按金额）';
+  }
+  if (amountLabel) amountLabel.textContent = '一口价金额（元）';
+  if (amountHint) {
+    amountHint.textContent = '填写金额并保存后进入待收款；在收入里标为已到账后计入收入，档期变为已交付';
+  }
+}
+
+function toggleEventClientBillingMode() {
+  if ($('#eventType')?.value !== '客户' || !isTimeBillingEnabled()) return;
+  eventFormClientBillingDraft = eventFormClientBillingDraft === CLIENT_BILLING.TIME
+    ? CLIENT_BILLING.FLAT
+    : CLIENT_BILLING.TIME;
+  if (eventFormClientBillingDraft === CLIENT_BILLING.FLAT) {
+    fillDurationFields(null);
+  } else {
+    const amountEl = $('#eventClientFlatAmount');
+    if (amountEl) amountEl.value = '';
+  }
+  syncEventClientBillingUI();
+}
+
 function updateEventFormForType(type) {
   const isClient = type === '客户';
   const isSocial = type === '自媒体';
   const isCustom = isCustomEventType(type);
-  const useTime = isClient && isTimeBillingEnabled();
   const clientGroup = $('#eventClient')?.closest('.form-group');
   const socialAmountGroup = $('#eventSocialAmountGroup');
   const incomeGroup = $('#eventIncomeGroup');
-  const durationGroup = $('#eventDurationGroup');
-  const clientAmountGroup = $('#eventClientAmountGroup');
   const clientInput = $('#eventClient');
   const projectInput = $('#eventProjectName');
-  const amountHint = $('#eventClientAmountGroup .event-form__hint');
 
   if (clientGroup) clientGroup.hidden = !isClient;
   if (socialAmountGroup) socialAmountGroup.hidden = !isSocial;
   if (incomeGroup) incomeGroup.hidden = true;
-  if (durationGroup) durationGroup.hidden = !useTime;
-  if (clientAmountGroup) {
-    clientAmountGroup.hidden = !((isClient && !useTime) || isCustom);
-  }
-  if (amountHint) {
-    amountHint.textContent = isCustom
-      ? '可选：填写后保存将生成待收款明细；到账后档期变为已完成'
-      : '填写金额并保存后进入待收款；在收入里标为已到账后计入收入，档期变为已交付';
-  }
 
   if (clientInput) clientInput.required = isClient;
   if (projectInput) {
@@ -3171,6 +3261,13 @@ function updateEventFormForType(type) {
     projectInput.placeholder = isCustom ? '项目 / 事项名称' : '自媒体项目';
   }
 
+  if (!isClient) {
+    eventFormClientBillingDraft = CLIENT_BILLING.FLAT;
+  } else if (!isTimeBillingEnabled()) {
+    eventFormClientBillingDraft = CLIENT_BILLING.FLAT;
+  }
+
+  syncEventClientBillingUI();
   updateSocialAmountFieldState();
 }
 
@@ -3234,6 +3331,9 @@ function openModal(data = {}) {
   const formType = formTypeValue(data.type);
   $('#eventType').value = formType;
   populateStatusSelect(formType, data.status || getDefaultStatusForEventType(formType));
+  eventFormClientBillingDraft = formType === '客户'
+    ? resolveClientFormBillingDraft(data)
+    : CLIENT_BILLING.FLAT;
   updateEventFormForType(formType);
   const socialAmount = data.socialAmount ?? (formType === '自媒体' ? data.income : null);
   $('#eventSocialAmount').value = socialAmount != null && socialAmount !== '' ? socialAmount : '';
@@ -3296,8 +3396,12 @@ function saveEventFromForm(e) {
   }
 
   const isCustom = isCustomEventType(formType);
+  const clientUsesTime = formType === '客户'
+    && isTimeBillingEnabled()
+    && eventFormClientBillingDraft === CLIENT_BILLING.TIME;
+
   if (formType === '客户') {
-    if (isTimeBillingEnabled()) {
+    if (clientUsesTime) {
       durationSeconds = readDurationSecondsFromForm();
       if (status === '审核中' && !(durationSeconds > 0)) {
         alert('按时计费：状态为「审核中」时请填写成片时长');
@@ -3327,7 +3431,6 @@ function saveEventFromForm(e) {
   }
 
   const previous = id ? appData.events.find((ev) => ev.id === id) || null : null;
-  const clientUsesTime = formType === '客户' && isTimeBillingEnabled();
 
   const payload = normalizeEvent({
     id: id || crypto.randomUUID(),
@@ -3343,6 +3446,11 @@ function saveEventFromForm(e) {
       : null,
     clientFlatAmount: (formType === '客户' && !clientUsesTime) || isCustom
       ? clientFlatAmount
+      : null,
+    clientBillingMode: formType === '客户'
+      ? (isTimeBillingEnabled()
+        ? (clientUsesTime ? CLIENT_BILLING.TIME : CLIENT_BILLING.FLAT)
+        : CLIENT_BILLING.FLAT)
       : null,
     clientId: previous?.clientId || null,
     incomeGenerated: previous?.incomeGenerated || false,
@@ -5066,8 +5174,14 @@ document.addEventListener('DOMContentLoaded', () => {
   $('#eventType').addEventListener('change', () => {
     const type = $('#eventType').value;
     populateStatusSelect(type, null);
+    if (type === '客户' && isTimeBillingEnabled()) {
+      eventFormClientBillingDraft = CLIENT_BILLING.TIME;
+    } else {
+      eventFormClientBillingDraft = CLIENT_BILLING.FLAT;
+    }
     updateEventFormForType(type);
   });
+  $('#btnEventClientBillingSwitch')?.addEventListener('click', toggleEventClientBillingMode);
   $('#eventStatus')?.addEventListener('change', () => {
     updateEventFormForType($('#eventType').value);
   });

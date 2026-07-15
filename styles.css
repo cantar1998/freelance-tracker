@@ -1169,6 +1169,17 @@ body {
   color: var(--text-muted);
 }
 
+.event-form__billing-toggle {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+}
+
+.event-form__hint--inline {
+  margin: 0;
+}
+
 .event-form__duration-row {
   display: flex;
   align-items: center;

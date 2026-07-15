@@ -222,6 +222,13 @@
           <input type="date" id="eventDate" required>
         </div>
 
+        <div class="form-group event-form__full" id="eventClientBillingToggleGroup" hidden>
+          <div class="event-form__billing-toggle">
+            <button type="button" class="btn btn--ghost income-toolbar__btn" id="btnEventClientBillingSwitch">改为一口价</button>
+            <p class="event-form__hint event-form__hint--inline" id="eventClientBillingHint">当前：按时计费（成片时长）</p>
+          </div>
+        </div>
+
         <div class="form-group event-form__full" id="eventDurationGroup" hidden>
           <label for="eventDurationMin">成片时长</label>
           <div class="event-form__duration-row">
@@ -234,7 +241,7 @@
         </div>
 
         <div class="form-group event-form__full" id="eventClientAmountGroup" hidden>
-          <label for="eventClientFlatAmount">金额（元）</label>
+          <label for="eventClientFlatAmount" id="eventClientFlatAmountLabel">金额（元）</label>
           <input type="number" id="eventClientFlatAmount" min="0" step="0.01" placeholder="例：1500">
           <p class="event-form__hint">填写金额并保存后进入待收款；在收入里标为已到账后计入收入，档期变为已交付</p>
         </div>
@@ -551,7 +558,7 @@
                 <h4 class="settings-billing-overview__title">客户剪辑</h4>
                 <ul class="settings-billing-overview__list">
                   <li>默认按金额入账：填金额 → 待收款 → 收入里点「已到账」后档期变更为「已交付」</li>
-                  <li>需要按成片时长计费时，打开下方开关</li>
+                  <li>打开下方开关后默认按时长计费；单个档期可点「改为一口价」仍按金额入账</li>
                 </ul>
               </div>
             </div>
@@ -559,7 +566,7 @@
               <input type="checkbox" id="settingsTimeBillingEnabled">
               <span class="settings-switch__text">
                 <span class="settings-switch__title">启用按时计费</span>
-                <span class="settings-switch__desc">打开后，客户档期改为填写成片时长（不填金额），并按规则算钱。</span>
+                <span class="settings-switch__desc">打开后，客户档期默认改填成片时长；需要一口价的档期可单独切换。</span>
               </span>
             </label>
 
