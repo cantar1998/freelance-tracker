@@ -4783,48 +4783,6 @@ function initCalendar() {
   });
 }
 
-function seedDemoData() {
-  if (appData.events.length > 0) return;
-
-  const now = new Date();
-  const y = now.getFullYear();
-  const m = now.getMonth();
-
-  appData.events = [
-    normalizeEvent({
-      id: crypto.randomUUID(),
-      projectName: '西号',
-      client: '星火科技',
-      type: '剪辑',
-      date: toDateString(new Date(y, m, 8)),
-      income: 12000,
-      status: '已交付',
-      notes: '已交付源文件',
-    }),
-    normalizeEvent({
-      id: crypto.randomUUID(),
-      projectName: '东号',
-      client: '云端工作室',
-      type: '拍摄',
-      date: toDateString(new Date(y, m, 15)),
-      income: 25000,
-      status: '已排期',
-      notes: '外景拍摄',
-    }),
-    normalizeEvent({
-      id: crypto.randomUUID(),
-      projectName: '',
-      client: '张三',
-      type: '客户',
-      date: toDateString(new Date(y, m, 22)),
-      income: 0,
-      status: '已排期',
-      notes: '',
-    }),
-  ];
-  saveData();
-}
-
 function getSelectedTimeBillingSchemeFromForm() {
   if ($('#settingsBillingCustom')?.checked) return TIME_BILLING_SCHEMES.REMAINDER_TIERS;
   return TIME_BILLING_SCHEMES.REMAINDER_LADDER;
@@ -5143,7 +5101,6 @@ document.addEventListener('DOMContentLoaded', () => {
   updateEventFormForType('自媒体');
   populateManualIncomeTypeSelect();
   populateIncomeFilterTypeOptions();
-  seedDemoData();
   applyThemeFromSettings();
   initSettingsModal();
   initCalendar();
